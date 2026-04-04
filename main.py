@@ -67,12 +67,7 @@ from google.api_core.exceptions import (
     NotFound,
     ResourceExhausted,
 )
-from mcp.server import Server
-from mcp.server.sse import SseServerTransport
-from starlette.applications import Starlette
-from starlette.routing import Route
-from starlette.requests import Request
-from starlette.responses import JSONResponse
+from mcp.server.fastmcp import FastMCP
 from datetime import datetime, timedelta, timezone
 
 # ═══════════════════════════════════════════════════════════════
@@ -119,7 +114,7 @@ logger = logging.getLogger("google-native-mcp")
 # MCP SERVER
 # ═══════════════════════════════════════════════════════════════
 
-app_mcp = Server("google-native-mcp")
+app_mcp = FastMCP("google-native-mcp", json_response=True)
 
 # ═══════════════════════════════════════════════════════════════
 # HELPERS
@@ -199,7 +194,7 @@ def _secops_headers() -> dict:
 
 
 @app_mcp.tool()
-async def get_scc_findings(project_id: str, severity: str = "CRITICAL", max_results: int = 10) -> str:
+def get_scc_findings(project_id: str, severity: str = "CRITICAL", max_results: int = 10) -> str:
     """Fetch ACTIVE vulnerabilities from Security Command Center."""
     try:
         project_id = validate_project_id(project_id)
@@ -228,7 +223,7 @@ async def get_scc_findings(project_id: str, severity: str = "CRITICAL", max_resu
 
 
 @app_mcp.tool()
-async def query_cloud_logging(project_id: str, filter_string: str, max_results: int = 10) -> str:
+def query_cloud_logging(project_id: str, filter_string: str, max_results: int = 10) -> str:
     """Query Google Cloud Logging for IAM changes, compute events, and audit trails."""
     try:
         project_id = validate_project_id(project_id)
@@ -244,7 +239,7 @@ async def query_cloud_logging(project_id: str, filter_string: str, max_results: 
 
 
 @app_mcp.tool()
-async def search_secops_udm(query: str, hours_back: int = 24) -> str:
+def search_secops_udm(query: str, hours_back: int = 24) -> str:
     """Execute a UDM search or YARA-L query in Google SecOps (Chronicle)."""
     try:
         if not query or len(query.strip()) < 5:
@@ -267,7 +262,7 @@ async def search_secops_udm(query: str, hours_back: int = 24) -> str:
 
 
 @app_mcp.tool()
-async def list_secops_detections(hours_back: int = 24, max_results: int = 50) -> str:
+def list_secops_detections(hours_back: int = 24, max_results: int = 50) -> str:
     """List recent YARA-L detection alerts with rule names, severity, and outcomes."""
     try:
         hours_back = min(max(1, hours_back), 8760)
@@ -298,7 +293,7 @@ async def list_secops_detections(hours_back: int = 24, max_results: int = 50) ->
 
 
 @app_mcp.tool()
-async def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
+def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
     """
     Check for unparsed logs in SecOps. If log_type is provided, checks that specific source.
     Returns unparsed volume to identify silent parser failures.
@@ -329,7 +324,7 @@ async def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str
 
 
 @app_mcp.tool()
-async def enrich_indicator(indicator: str, indicator_type: str = "auto") -> str:
+def enrich_indicator(indicator: str, indicator_type: str = "auto") -> str:
     """Enrich an IP, domain, URL, or file hash using Google Threat Intel / VirusTotal."""
     try:
         indicator = validate_indicator(indicator)
@@ -372,7 +367,7 @@ async def enrich_indicator(indicator: str, indicator_type: str = "auto") -> str:
 
 
 @app_mcp.tool()
-async def extract_iocs_from_detections(hours_back: int = 24) -> str:
+def extract_iocs_from_detections(hours_back: int = 24) -> str:
     """
     Bulk extract all IOCs (IPs, domains, hashes, emails) from recent detections.
     Returns deduplicated sets for blocklist or Data Table population.
@@ -430,7 +425,7 @@ async def extract_iocs_from_detections(hours_back: int = 24) -> str:
 
 
 @app_mcp.tool()
-async def vertex_ai_investigate(context: str, task: str = "Analyze and provide a threat assessment.", model: str = "gemini-2.0-flash") -> str:
+def vertex_ai_investigate(context: str, task: str = "Analyze and provide a threat assessment.", model: str = "gemini-2.0-flash") -> str:
     """Use Vertex AI (Gemini) to analyze security findings and generate investigation reports."""
     try:
         from google.cloud import aiplatform
@@ -458,7 +453,7 @@ Reference UDM fields, MITRE ATT&CK techniques, and Google SecOps capabilities.""
 
 
 @app_mcp.tool()
-async def list_data_tables() -> str:
+def list_data_tables() -> str:
     """List all Data Tables in the SecOps instance."""
     try:
         resp = requests.get(f"{SECOPS_BASE_URL}/dataTables", headers=_secops_headers(), timeout=15)
@@ -470,7 +465,7 @@ async def list_data_tables() -> str:
 
 
 @app_mcp.tool()
-async def get_data_table(table_name: str) -> str:
+def get_data_table(table_name: str) -> str:
     """Read the contents of a specific Data Table."""
     try:
         resp = requests.get(f"{SECOPS_BASE_URL}/dataTables/{table_name}",
@@ -483,7 +478,7 @@ async def get_data_table(table_name: str) -> str:
 
 
 @app_mcp.tool()
-async def update_data_table(table_name: str, rows: list, description: str = "") -> str:
+def update_data_table(table_name: str, rows: list, description: str = "") -> str:
     """
     Update a Data Table with new rows. Overwrites existing content.
     Each row is a list of string values matching the table's column schema.
@@ -512,7 +507,7 @@ async def update_data_table(table_name: str, rows: list, description: str = "") 
 
 
 @app_mcp.tool()
-async def list_rules(page_size: int = 100) -> str:
+def list_rules(page_size: int = 100) -> str:
     """List all YARA-L rules in the SecOps instance with their enabled/disabled status."""
     try:
         resp = requests.get(f"{SECOPS_BASE_URL}/rules",
@@ -525,7 +520,7 @@ async def list_rules(page_size: int = 100) -> str:
 
 
 @app_mcp.tool()
-async def toggle_rule(rule_id: str, enabled: bool) -> str:
+def toggle_rule(rule_id: str, enabled: bool) -> str:
     """Enable or disable a YARA-L detection rule by its rule ID."""
     try:
         action = "enable" if enabled else "disable"
@@ -545,7 +540,7 @@ async def toggle_rule(rule_id: str, enabled: bool) -> str:
 
 
 @app_mcp.tool()
-async def purge_email_o365(target_mailbox: str, message_id: str, purge_type: str = "hardDelete") -> str:
+def purge_email_o365(target_mailbox: str, message_id: str, purge_type: str = "hardDelete") -> str:
     """
     Purge an email from an Office 365 mailbox using Microsoft Graph API.
     Uses the internet Message-ID header to locate the email, then executes a Hard or Soft Delete.
@@ -598,7 +593,7 @@ async def purge_email_o365(target_mailbox: str, message_id: str, purge_type: str
 
 
 @app_mcp.tool()
-async def suspend_okta_user(user_email: str, clear_sessions: bool = True) -> str:
+def suspend_okta_user(user_email: str, clear_sessions: bool = True) -> str:
     """
     Suspend a user in Okta and optionally clear all active sessions.
     Used for compromised account containment — blocks new logins and kills existing tokens.
@@ -635,7 +630,7 @@ async def suspend_okta_user(user_email: str, clear_sessions: bool = True) -> str
 
 
 @app_mcp.tool()
-async def revoke_azure_ad_sessions(user_email: str) -> str:
+def revoke_azure_ad_sessions(user_email: str) -> str:
     """Revoke all active sign-in sessions for an Azure AD / Entra ID user."""
     try:
         if not all([AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID, AZURE_AD_CLIENT_SECRET]):
@@ -669,7 +664,7 @@ async def revoke_azure_ad_sessions(user_email: str) -> str:
 
 
 @app_mcp.tool()
-async def revoke_aws_access_keys(target_user: str) -> str:
+def revoke_aws_access_keys(target_user: str) -> str:
     """Disable all active AWS IAM access keys for a user. Stops leaked credential abuse."""
     try:
         if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY]):
@@ -691,7 +686,7 @@ async def revoke_aws_access_keys(target_user: str) -> str:
 
 
 @app_mcp.tool()
-async def revoke_aws_sts_sessions(target_user: str) -> str:
+def revoke_aws_sts_sessions(target_user: str) -> str:
     """
     Deny all pre-existing STS sessions for an AWS IAM user.
     Critical: disabling access keys does NOT invalidate already-assumed roles.
@@ -716,7 +711,7 @@ async def revoke_aws_sts_sessions(target_user: str) -> str:
 
 
 @app_mcp.tool()
-async def revoke_gcp_sa_keys(project_id: str, service_account_email: str) -> str:
+def revoke_gcp_sa_keys(project_id: str, service_account_email: str) -> str:
     """Delete all user-managed keys for a GCP service account. Stops leaked SA key abuse."""
     try:
         token = get_adc_token()
@@ -746,7 +741,7 @@ async def revoke_gcp_sa_keys(project_id: str, service_account_email: str) -> str
 
 
 @app_mcp.tool()
-async def isolate_crowdstrike_host(hostname: str = "", device_id: str = "") -> str:
+def isolate_crowdstrike_host(hostname: str = "", device_id: str = "") -> str:
     """
     Network-isolate a host via CrowdStrike Falcon API.
     The host can still communicate with the CrowdStrike cloud for remote forensics
@@ -801,7 +796,7 @@ async def isolate_crowdstrike_host(hostname: str = "", device_id: str = "") -> s
 
 
 @app_mcp.tool()
-async def create_soar_case(
+def create_soar_case(
     title: str,
     description: str,
     priority: str = "MEDIUM",
@@ -829,7 +824,7 @@ async def create_soar_case(
 
 
 @app_mcp.tool()
-async def update_soar_case(
+def update_soar_case(
     case_id: str,
     comment: str = "",
     priority: str = "",
@@ -886,27 +881,33 @@ async def update_soar_case(
 
 
 # ═══════════════════════════════════════════════════════════════
-# HEALTH CHECK & SSE TRANSPORT
+# RUN SERVER
 # ═══════════════════════════════════════════════════════════════
 
-transport = None
+# ═══════════════════════════════════════════════════════════════
+# STARLETTE APP WITH SSE TRANSPORT
+# ═══════════════════════════════════════════════════════════════
 
+from mcp.server.sse import SseServerTransport
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import JSONResponse
 
-async def sse_handler(request: Request):
-    global transport
-    transport = SseServerTransport("/messages")
-    await app_mcp.connect(transport)
-    return await transport.handle_sse(request)
+sse = SseServerTransport("/messages/")
 
+async def handle_sse(request: StarletteRequest):
+    async with sse.connect_sse(
+        request.scope, request.receive, request._send
+    ) as streams:
+        await app_mcp._mcp_server.run(
+            streams[0], streams[1], app_mcp._mcp_server.create_initialization_options()
+        )
 
-async def message_handler(request: Request):
-    global transport
-    if transport:
-        await transport.handle_post_message(request)
-    return JSONResponse({"status": "ok"})
+async def handle_messages(request: StarletteRequest):
+    await sse.handle_post_message(request.scope, request.receive, request._send)
 
-
-async def health_check(request: Request):
+async def health_check(request: StarletteRequest):
     health = {
         "status": "healthy",
         "server": "google-native-mcp",
@@ -923,25 +924,15 @@ async def health_check(request: Request):
             "crowdstrike": bool(CS_CLIENT_ID),
         },
     }
-    try:
-        get_adc_token()
-        health["adc_status"] = "valid"
-    except RuntimeError as e:
-        health["status"] = "degraded"
-        health["adc_status"] = str(e)
+    return JSONResponse(health)
 
-    return JSONResponse(health, status_code=200 if health["status"] == "healthy" else 503)
-
-
-# ═══════════════════════════════════════════════════════════════
-# STARLETTE APPLICATION
-# ═══════════════════════════════════════════════════════════════
-
-app = Starlette(routes=[
-    Route("/sse", endpoint=sse_handler, methods=["GET"]),
-    Route("/messages", endpoint=message_handler, methods=["POST"]),
-    Route("/health", endpoint=health_check, methods=["GET"]),
-])
+app = Starlette(
+    routes=[
+        Route("/health", endpoint=health_check),
+        Route("/sse", endpoint=handle_sse),
+        Mount("/messages", app=sse.handle_post_message),
+    ]
+)
 
 if __name__ == "__main__":
     import uvicorn

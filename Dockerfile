@@ -11,6 +11,5 @@ COPY main.py .
 # Switch to non-root user
 USER mcpuser
 
-# Cloud Run injects $PORT (default 8080)
 EXPOSE 8080
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "main.py"]
