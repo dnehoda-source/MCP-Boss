@@ -6,7 +6,9 @@ Security pillar plus third-party containment APIs into a single MCP endpoint.
 
 TOOL CATEGORIES:
   🔍 DISCOVERY & HUNTING (read-only)
-    - get_scc_findings          → Security Command Center vulnerabilities
+    - get_scc_findings          → Security Command Center vulnerabilities (any state/severity)
+    - list_scc_findings_custom  → Query SCC with custom filters
+    - get_scc_finding_details   → Get detailed finding info
     - query_cloud_logging       → Cloud Audit Logs
     - search_secops_udm         → Chronicle UDM / YARA-L search
     - list_secops_detections    → YARA-L detection alerts
@@ -257,21 +259,48 @@ def _secops_headers() -> dict:
     }
 
 
+def parse_time_range(hours_back: int = 24, start_time: str = "", end_time: str = "") -> tuple:
+    """
+    Parse time range parameters into ISO 8601 timestamps.
+    Returns (start_iso, end_iso).
+    Priority: explicit start_time/end_time > hours_back
+    """
+    try:
+        end = datetime.now(timezone.utc)
+        if end_time:
+            try:
+                end = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            except:
+                pass
+        if start_time:
+            try:
+                start = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                return (start.isoformat(), end.isoformat())
+            except:
+                pass
+        hours_back = min(max(1, hours_back), 8760)
+        start = end - timedelta(hours=hours_back)
+        return (start.isoformat(), end.isoformat())
+    except Exception as e:
+        logger.warning(f"Time range parse error: {e}, using default")
+        return ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(), datetime.now(timezone.utc).isoformat())
+
+
 # ═══════════════════════════════════════════════════════════════
 # 🔍 DISCOVERY & HUNTING
 # ═══════════════════════════════════════════════════════════════
 
 
 @app_mcp.tool()
-def get_scc_findings(project_id: str = "", severity: str = "CRITICAL", max_results: int = 10) -> str:
-    """Fetch ACTIVE vulnerabilities from Security Command Center."""
+def get_scc_findings(project_id: str = "", severity: str = "CRITICAL", max_results: int = 10, state: str = "ACTIVE") -> str:
+    """Fetch vulnerabilities from Security Command Center. Filters by severity and state (ACTIVE, INACTIVE, RESOLVED)."""
     try:
         project_id = validate_project_id(project_id or SECOPS_PROJECT_ID)
         max_results = min(max(1, max_results), 50)
         client = securitycenter.SecurityCenterClient()
         findings = client.list_findings(request={
             "parent": f"projects/{project_id}",
-            "filter": f'state="ACTIVE" AND severity="{severity.upper()}"',
+            "filter": f'state="{state.upper()}" AND severity="{severity.upper()}"',
         })
         results = []
         for i, f in enumerate(findings):
@@ -285,39 +314,49 @@ def get_scc_findings(project_id: str = "", severity: str = "CRITICAL", max_resul
                 "external_uri": f.finding.external_uri,
                 "description": (f.finding.description or "")[:500],
             })
-        logger.info(f"SCC: {len(results)} {severity} findings for {project_id}")
+        logger.info(f"SCC: {len(results)} {severity} findings (state={state}) for {project_id}")
         return json.dumps({"scc_findings": results, "count": len(results)})
     except (PermissionDenied, NotFound, ValueError, GoogleAPICallError) as e:
         return json.dumps({"error": type(e).__name__, "detail": str(e)})
 
 
 @app_mcp.tool()
-def query_cloud_logging(project_id: str = "", filter_string: str = "", max_results: int = 10) -> str:
-    """Query Google Cloud Logging for IAM changes, compute events, and audit trails."""
+def query_cloud_logging(project_id: str = "", filter_string: str = "", max_results: int = 10, hours_back: int = 24, start_time: str = "", end_time: str = "") -> str:
+    """Query Google Cloud Logging for IAM changes, compute events, and audit trails with time range filtering."""
     try:
         project_id = validate_project_id(project_id or SECOPS_PROJECT_ID)
         if not filter_string or len(filter_string.strip()) < 10:
             return json.dumps({"error": "Filter too broad", "detail": "Minimum 10 chars required."})
+        
+        # Parse time range
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        
+        # Add time range to filter
+        time_filter = f'timestamp >= "{start_iso}" AND timestamp <= "{end_iso}"'
+        combined_filter = f"({filter_string}) AND {time_filter}"
+        
         client = cloud_logging.Client(project=project_id)
-        entries = client.list_entries(filter_=filter_string, max_results=min(max_results, 50))
+        entries = client.list_entries(filter_=combined_filter, max_results=min(max_results, 50))
         logs = [{"timestamp": str(e.timestamp), "severity": e.severity, "payload": str(e.payload)[:2000]} for e in entries]
         logger.info(f"Cloud Logging: {len(logs)} entries for {project_id}")
-        return json.dumps({"cloud_logs": logs, "count": len(logs)})
+        return json.dumps({"cloud_logs": logs, "count": len(logs), "time_range": {"start": start_iso, "end": end_iso}})
     except (PermissionDenied, ResourceExhausted, ValueError, GoogleAPICallError) as e:
         return json.dumps({"error": type(e).__name__, "detail": str(e)})
 
 
 @app_mcp.tool()
-def search_secops_udm(query: str, hours_back: int = 24, max_events: int = 100) -> str:
-    """Execute a UDM search query in Google SecOps (Chronicle). Uses the v1alpha udmSearch API."""
+def search_secops_udm(query: str, hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "") -> str:
+    """Execute a UDM search query in Google SecOps (Chronicle). Uses the v1alpha udmSearch API with time range filtering."""
     try:
         if not query or len(query.strip()) < 5:
             return json.dumps({"error": "Query too short"})
-        hours_back = min(max(1, hours_back), 8760)
         max_events = min(max(1, max_events), 10000)
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        
+        # Parse time range
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        start = datetime.fromisoformat(start_iso.replace('Z', '+00:00')).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.fromisoformat(end_iso.replace('Z', '+00:00')).strftime("%Y-%m-%dT%H:%M:%SZ")
+        
         resp = requests.get(
             f"{SECOPS_BASE_URL}:udmSearch",
             headers=_secops_headers(),
@@ -345,13 +384,14 @@ def search_secops_udm(query: str, hours_back: int = 24, max_events: int = 100) -
 
 
 @app_mcp.tool()
-def list_secops_detections(hours_back: int = 24, max_results: int = 50) -> str:
-    """List recent YARA-L detection alerts with rule names, severity, and outcomes."""
+def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_time: str = "", end_time: str = "") -> str:
+    """List recent YARA-L detection alerts with rule names, severity, and outcomes with time range filtering."""
     try:
-        hours_back = min(max(1, hours_back), 8760)
-        now = datetime.now(timezone.utc)
-        start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        # Parse time range
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        start = datetime.fromisoformat(start_iso.replace('Z', '+00:00')).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.fromisoformat(end_iso.replace('Z', '+00:00')).strftime("%Y-%m-%dT%H:%M:%SZ")
+        
         resp = requests.post(
             f"{SECOPS_BASE_URL}/rules:listDetections",
             headers=_secops_headers(),
@@ -369,7 +409,7 @@ def list_secops_detections(hours_back: int = 24, max_results: int = 50) -> str:
                     "detection_time": d.get("detectionTime", ""),
                     "outcomes": det.get("outcomes", {}),
                 })
-            return json.dumps({"detections": detections, "count": len(detections)})
+            return json.dumps({"detections": detections, "count": len(detections), "time_range": {"start": start, "end": end}})
         return json.dumps({"error": f"API [{resp.status_code}]", "detail": resp.text[:500]})
     except Exception as e:
         return json.dumps({"error": str(e)})
