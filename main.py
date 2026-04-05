@@ -2262,6 +2262,50 @@ def clone_playbook(source_playbook_id: str, new_name: str, new_trigger_filter: s
 
 
 # ═══════════════════════════════════════════════════════════════
+# 🔧 HELPER: Fallback summary builder
+# ═══════════════════════════════════════════════════════════════
+
+def _build_basic_summary(trigger, trigger_type, severity, enrichment, step2, step5b, results):
+    """Fallback summary when Vertex AI is unavailable."""
+    lines = [
+        f"🔍 AUTONOMOUS INVESTIGATION COMPLETE",
+        f"",
+        f"Trigger: {trigger_type.upper()} — {trigger}",
+        f"Severity: {severity}",
+        f"",
+        f"📊 Enrichment:",
+    ]
+    if enrichment.get("malicious_count") is not None:
+        lines.append(f"  VT Score: {enrichment.get('malicious_count', 'N/A')}/{enrichment.get('total_engines', 'N/A')} malicious")
+    if enrichment.get("country"):
+        lines.append(f"  Country: {enrichment.get('country', 'N/A')}")
+    if enrichment.get("asn"):
+        lines.append(f"  ASN: {enrichment.get('asn', 'N/A')}")
+    if enrichment.get("result") == "NOT_FOUND":
+        lines.append(f"  ⚠️ NOT IN VT DATABASE — Potential zero-day")
+    lines.append(f"")
+    lines.append(f"🔎 UDM Search: {step2.get('events_found', 0)} events found (72h window)")
+    lines.append(f"")
+    lines.append(f"⚡ Actions Taken:")
+    if results["actions_taken"]:
+        for action in results["actions_taken"]:
+            lines.append(f"  ✅ {action}")
+    else:
+        lines.append(f"  ℹ️ No automated actions required (severity={severity})")
+    if step5b.get("actions"):
+        lines.append(f"")
+        lines.append(f"🛡️ Containment:")
+        for ca in step5b["actions"]:
+            action_name = ca.get("action", "UNKNOWN")
+            detail = ca.get("detail", "")
+            if ca.get("requires_approval"):
+                lines.append(f"  ⏳ {action_name}: {detail} (REQUIRES APPROVAL)")
+            else:
+                lines.append(f"  ✅ {action_name}: {detail}")
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════════════════
 # 🤖 AUTONOMOUS INVESTIGATION PIPELINE
 # ═══════════════════════════════════════════════════════════════
 
@@ -2659,53 +2703,106 @@ def autonomous_investigate(
         step5b["status"] = "complete"
         results["steps"].append(step5b)
 
-        # ── STEP 6: GENERATE SUMMARY ──
+        # ── STEP 6: GENERATE INVESTIGATION REPORT (Vertex AI) ──
         step6 = {"step": "6_REPORT", "status": "running"}
         
-        summary_lines = [
-            f"🔍 AUTONOMOUS INVESTIGATION COMPLETE",
-            f"",
-            f"Trigger: {trigger_type.upper()} — {trigger}",
-            f"Severity: {severity}",
-            f"",
-            f"📊 Enrichment:",
-        ]
+        # Build context for Vertex AI
+        report_context = {
+            "trigger": trigger,
+            "trigger_type": trigger_type,
+            "enrichment": enrichment,
+            "udm_events_found": step2.get("events_found", 0),
+            "udm_query": udm_query,
+            "severity": severity,
+            "rule_created": step4.get("rule_created", False),
+            "rule_name": step4.get("rule_name", step4.get("existing_rule", "N/A")),
+            "case_created": step5.get("case_created", False),
+            "case_id": step5.get("case_id", "N/A"),
+            "containment_actions": step5b.get("actions", []),
+            "actions_taken": results["actions_taken"],
+        }
         
-        if enrichment.get("malicious_count") is not None:
-            summary_lines.append(f"  VT Score: {enrichment.get('malicious_count', 'N/A')}/{enrichment.get('total_engines', 'N/A')} malicious")
-        if enrichment.get("country"):
-            summary_lines.append(f"  Country: {enrichment.get('country', 'N/A')}")
-        if enrichment.get("asn"):
-            summary_lines.append(f"  ASN: {enrichment.get('asn', 'N/A')}")
-        if enrichment.get("result") == "NOT_FOUND":
-            summary_lines.append(f"  ⚠️ NOT IN VT DATABASE — Potential zero-day")
+        try:
+            token = get_adc_token()
+            gemini_url = (
+                f"https://us-central1-aiplatform.googleapis.com/v1/"
+                f"projects/{SECOPS_PROJECT_ID}/locations/us-central1/"
+                f"publishers/google/models/{GEMINI_MODEL}:generateContent"
+            )
+            
+            report_prompt = f"""You are a senior security analyst generating a formal investigation report for the SOC.
+
+INVESTIGATION DATA:
+{json.dumps(report_context, indent=2, default=str)}
+
+Generate a professional investigation report using EXACTLY this format:
+
+📋 INVESTIGATION REPORT — IR-{datetime.now(timezone.utc).strftime('%Y-%m%d-%H%M')}
+Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}
+
+SUBJECT: {trigger_type.upper()} Investigation — {trigger}
+CLASSIFICATION: {severity}
+ANALYST: Autonomous MCP Pipeline
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EXECUTIVE SUMMARY:
+Write 2-3 sentences summarizing what was found and the overall risk assessment.
+
+INDICATOR DETAILS:
+List the enrichment data (VT score, ASN, country, reputation, etc.)
+
+SIEM FINDINGS:
+Describe what was found in the UDM search — how many events, what type of activity, time range.
+
+THREAT ASSESSMENT:
+Explain the severity rating and why. Reference the VT score and event volume.
+
+ACTIONS TAKEN:
+List each action with a ✅ prefix. Include rule creation, case creation, containment actions.
+
+RECOMMENDATIONS:
+Provide 3-5 specific, actionable next steps for the SOC team.
+
+MITRE ATT&CK MAPPING:
+Map the observed activity to relevant MITRE techniques.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+END OF REPORT
+
+Be specific. Use the actual data provided. Do not hallucinate findings."""
+
+            report_resp = requests.post(
+                gemini_url,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": report_prompt}]}],
+                    "systemInstruction": {"parts": [{"text": (
+                        "You are a senior SOC analyst writing formal investigation reports. "
+                        "Be precise, technical, and actionable. Use the exact data provided. "
+                        "Do not make up findings. Reference specific IPs, ASNs, event counts, and rule names from the data."
+                    )}]},
+                },
+                timeout=60,
+            )
+            
+            if report_resp.status_code == 200:
+                report_text = report_resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                results["report"] = report_text
+                results["summary"] = report_text
+                step6["report_generated"] = True
+            else:
+                # Fallback to basic summary if Gemini fails
+                step6["report_generated"] = False
+                step6["gemini_error"] = f"API [{report_resp.status_code}]"
+                results["summary"] = _build_basic_summary(trigger, trigger_type, severity, enrichment, step2, step5b, results)
+                results["report"] = results["summary"]
+        except Exception as e:
+            step6["report_generated"] = False
+            step6["error"] = str(e)
+            results["summary"] = _build_basic_summary(trigger, trigger_type, severity, enrichment, step2, step5b, results)
+            results["report"] = results["summary"]
         
-        summary_lines.append(f"")
-        summary_lines.append(f"🔎 UDM Search: {events_found} events found (72h window)")
-        if udm_query:
-            summary_lines.append(f"  Query: {udm_query}")
-        
-        summary_lines.append(f"")
-        summary_lines.append(f"⚡ Actions Taken:")
-        if results["actions_taken"]:
-            for action in results["actions_taken"]:
-                summary_lines.append(f"  ✅ {action}")
-        else:
-            summary_lines.append(f"  ℹ️ No automated actions required (severity={severity})")
-        
-        # Add containment summary
-        if step5b.get("actions"):
-            summary_lines.append(f"")
-            summary_lines.append(f"🛡️ Containment:")
-            for ca in step5b["actions"]:
-                action_name = ca.get("action", "UNKNOWN")
-                detail = ca.get("detail", "")
-                if ca.get("requires_approval"):
-                    summary_lines.append(f"  ⏳ {action_name}: {detail} (REQUIRES APPROVAL)")
-                else:
-                    summary_lines.append(f"  ✅ {action_name}: {detail}")
-        
-        results["summary"] = "\n".join(summary_lines)
         step6["status"] = "complete"
         results["steps"].append(step6)
 

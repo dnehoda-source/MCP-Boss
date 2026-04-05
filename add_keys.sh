@@ -64,7 +64,7 @@ echo "Updating Cloud Run service..."
 
 gcloud run services update ${SERVICE} \
     --region ${REGION} \
-    --set-env-vars="${ENV_VARS}" \
+    --update-env-vars="${ENV_VARS}" \
     --quiet
 
 echo ""

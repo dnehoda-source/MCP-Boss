@@ -11,13 +11,14 @@ echo "🔨 Building..."
 gcloud builds submit --tag ${IMAGE} --quiet
 
 echo "🚀 Deploying..."
+# Use --update-env-vars to PRESERVE existing keys (GTI, Okta, etc)
 gcloud run deploy google-native-mcp \
     --image ${IMAGE} \
     --region us-central1 \
     --allow-unauthenticated \
     --memory 512Mi \
     --timeout 120 \
-    --set-env-vars="SECOPS_PROJECT_ID=${PROJECT_ID},SECOPS_CUSTOMER_ID=${CUSTOMER_ID},SECOPS_REGION=${REGION}" \
+    --update-env-vars="SECOPS_PROJECT_ID=${PROJECT_ID},SECOPS_CUSTOMER_ID=${CUSTOMER_ID},SECOPS_REGION=${REGION}" \
     --quiet
 
 echo "📦 Pushing to GitHub..."
