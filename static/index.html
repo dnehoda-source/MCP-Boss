@@ -3,9 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="google-oauth-client-id" content="YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com">
     <title>Google SecOps MCP Server</title>
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -17,49 +15,11 @@
             flex-direction: column;
         }
 
-        /* ── Auth Gate ── */
-        #auth-screen {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            gap: 32px;
-        }
-        #auth-screen .logo {
-            font-size: 48px;
-            margin-bottom: 8px;
-        }
-        #auth-screen h1 {
-            font-size: 22px;
-            color: #4ade80;
-            font-weight: 600;
-        }
-        #auth-screen p {
-            color: #888;
-            font-size: 13px;
-            max-width: 400px;
-            text-align: center;
-            line-height: 1.6;
-        }
-        #auth-screen .error {
-            color: #ef4444;
-            font-size: 12px;
-            margin-top: 8px;
-        }
-        #g_id_onload,
-        #google-signin-btn {
-            margin-top: 16px;
-        }
-
-        /* ── App (hidden until auth) ── */
+        /* ── App ── */
         #app {
-            display: none;
+            display: flex;
             flex-direction: column;
             height: 100vh;
-        }
-        #app.active {
-            display: flex;
         }
 
         /* ── Header ── */
@@ -85,38 +45,6 @@
             text-align: center;
         }
         header .status.connected { color: #4ade80; }
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex-shrink: 0;
-        }
-        .user-info img {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            border: 1px solid #4ade80;
-        }
-        .user-info .user-name {
-            font-size: 12px;
-            color: #ccc;
-            max-width: 120px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .sign-out-btn {
-            background: transparent;
-            border: 1px solid #555;
-            border-radius: 6px;
-            padding: 5px 12px;
-            color: #aaa;
-            font-family: inherit;
-            font-size: 11px;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-        .sign-out-btn:hover { border-color: #ef4444; color: #ef4444; }
 
         /* ── Chat ── */
         #chat {
@@ -190,50 +118,15 @@
         }
         #input-area button:hover { background: #22c55e; }
         #input-area button:disabled { background: #333; color: #666; cursor: not-allowed; }
-
-        /* ── Misc ── */
-        .tools-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 8px;
-            margin-top: 8px;
-        }
-        .tool-card {
-            background: #1a1a1a;
-            border: 1px solid #2a2a2a;
-            border-radius: 6px;
-            padding: 8px 12px;
-            font-size: 12px;
-            cursor: pointer;
-        }
-        .tool-card:hover { border-color: #4ade80; }
-        .tool-card .name { color: #4ade80; font-weight: 600; }
-        .tool-card .desc { color: #888; margin-top: 2px; }
-        .spinner { display: inline-block; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
 
-    <!-- ════════════ Auth Screen ════════════ -->
-    <div id="auth-screen">
-        <div class="logo">🔒</div>
-        <h1>Google SecOps MCP Server</h1>
-        <p>Sign in with your Google account to access the security operations console.</p>
-        <div id="google-signin-btn"></div>
-        <div id="auth-error" class="error" style="display:none;"></div>
-    </div>
-
-    <!-- ════════════ App (post-auth) ════════════ -->
+    <!-- ════════════ App ════════════ -->
     <div id="app">
         <header>
             <h1>🔒 Google SecOps MCP</h1>
             <div class="status" id="status">Connecting...</div>
-            <div class="user-info">
-                <img id="user-avatar" src="" alt="avatar" style="display:none;" />
-                <span class="user-name" id="user-name"></span>
-                <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
-            </div>
         </header>
 
         <div id="chat"></div>
@@ -246,177 +139,22 @@
 
     <script>
         // ── State ──
-        let idToken = null;
-        let tokenExpiry = 0;
         let tools = [];
-        let googleUser = null;
-        let clientId = null;
 
         const chat = document.getElementById('chat');
         const input = document.getElementById('input');
         const sendBtn = document.getElementById('send');
         const statusEl = document.getElementById('status');
-        const authScreen = document.getElementById('auth-screen');
-        const app = document.getElementById('app');
-        const authError = document.getElementById('auth-error');
 
-        // ── Resolve OAuth Client ID ──
-        // Priority: meta tag → /health endpoint → placeholder
-        function getClientIdFromMeta() {
-            const meta = document.querySelector('meta[name="google-oauth-client-id"]');
-            return meta ? meta.content : null;
-        }
-
-        async function getClientIdFromHealth() {
-            try {
-                const resp = await fetch('/health');
-                const data = await resp.json();
-                return data.oauth_client_id || data.client_id || null;
-            } catch { return null; }
-        }
-
-        async function resolveClientId() {
-            let cid = getClientIdFromMeta();
-            if (cid && !cid.startsWith('YOUR_')) return cid;
-            cid = await getClientIdFromHealth();
-            if (cid && !cid.startsWith('YOUR_')) return cid;
-            // Fallback to meta even if placeholder (for dev)
-            return getClientIdFromMeta();
-        }
-
-        // ── Google Identity Services ──
-        function handleCredentialResponse(response) {
-            idToken = response.credential;
-            const payload = parseJwt(idToken);
-            tokenExpiry = payload.exp * 1000; // ms
-            googleUser = {
-                name: payload.name || payload.email,
-                email: payload.email,
-                picture: payload.picture || '',
-            };
-            showApp();
-            scheduleTokenRefresh();
-        }
-
-        function parseJwt(token) {
-            const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-            return JSON.parse(atob(base64));
-        }
-
-        function showApp() {
-            authScreen.style.display = 'none';
-            app.classList.add('active');
-
-            // User info in header
-            document.getElementById('user-name').textContent = googleUser.name;
-            if (googleUser.picture) {
-                const avatar = document.getElementById('user-avatar');
-                avatar.src = googleUser.picture;
-                avatar.style.display = 'block';
-            }
-
-            input.focus();
-            initChat();
-        }
-
-        function signOut() {
-            idToken = null;
-            tokenExpiry = 0;
-            googleUser = null;
-            google.accounts.id.disableAutoSelect();
-            // Clear chat
-            chat.innerHTML = '';
-            tools = [];
-            // Show auth screen
-            app.classList.remove('active');
-            authScreen.style.display = 'flex';
-            // Re-render the button
-            renderSignInButton();
-        }
-
-        // ── Token Refresh ──
-        function scheduleTokenRefresh() {
-            const msUntilExpiry = tokenExpiry - Date.now();
-            // Refresh 2 min before expiry
-            const refreshIn = Math.max(msUntilExpiry - 120000, 10000);
-            setTimeout(() => {
-                // Trigger silent re-auth via prompt
-                google.accounts.id.prompt((notification) => {
-                    if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-                        // If silent refresh fails, user needs to click again
-                        console.warn('Token refresh: silent prompt skipped, will retry on next action');
-                    }
-                });
-            }, refreshIn);
-        }
-
-        // ── Auth Headers ──
-        function authHeaders() {
-            const headers = { 'Content-Type': 'application/json' };
-            if (idToken) {
-                headers['Authorization'] = 'Bearer ' + idToken;
-            }
-            return headers;
-        }
-
-        // Check if token is still valid (with 30s buffer)
-        function isTokenValid() {
-            return idToken && (Date.now() < tokenExpiry - 30000);
-        }
-
-        // ── Init Google Sign-In ──
-        function renderSignInButton() {
-            google.accounts.id.renderButton(
-                document.getElementById('google-signin-btn'),
-                {
-                    type: 'standard',
-                    theme: 'filled_black',
-                    size: 'large',
-                    text: 'signin_with',
-                    shape: 'rectangular',
-                    logo_alignment: 'left',
-                    width: 280,
-                }
-            );
-        }
-
-        async function initAuth() {
-            clientId = await resolveClientId();
-            if (!clientId) {
-                authError.textContent = 'OAuth Client ID not configured. Set it in the meta tag or /health endpoint.';
-                authError.style.display = 'block';
-                return;
-            }
-
-            // Wait for GIS library to load
-            if (typeof google === 'undefined' || !google.accounts) {
-                // Retry after script loads
-                window.addEventListener('load', () => setTimeout(initAuth, 200));
-                return;
-            }
-
-            google.accounts.id.initialize({
-                client_id: clientId,
-                callback: handleCredentialResponse,
-                auto_select: true,
-                itp_support: true,
-            });
-
-            renderSignInButton();
-
-            // Try auto sign-in (One Tap)
-            google.accounts.id.prompt();
-        }
-
-        // ── Chat Logic (post-auth) ──
+        // ── Chat Logic ──
         async function initChat() {
             try {
-                const resp = await fetch('/health', { headers: authHeaders() });
+                const resp = await fetch('/health');
                 const health = await resp.json();
-                statusEl.textContent = `✅ ${health.tools} tools · ${health.project} · ${health.region}`;
+                statusEl.textContent = `✅ ${health.tools} tools · ${health.project}`;
                 statusEl.className = 'status connected';
 
-                const toolResp = await fetch('/api/tools', { headers: authHeaders() });
+                const toolResp = await fetch('/api/tools');
                 if (toolResp.ok) {
                     tools = await toolResp.json();
                     showWelcome();
@@ -428,7 +166,7 @@
         }
 
         function showWelcome() {
-            let msg = `Welcome, ${googleUser.name}! Connected to Google SecOps MCP Server.\n\n`;
+            let msg = `Connected to Google SecOps MCP Server.\n\n`;
             msg += `${tools.length} tools available. Try:\n`;
             msg += `  • "check SCC findings for tito-436719"\n`;
             msg += `  • "enrich IP 198.51.100.42"\n`;
@@ -459,13 +197,6 @@
             const text = input.value.trim();
             if (!text) return;
 
-            // Check token validity
-            if (!isTokenValid()) {
-                addMessage('error', 'Session expired. Please sign in again.');
-                signOut();
-                return;
-            }
-
             addMessage('user', text);
             input.value = '';
             sendBtn.disabled = true;
@@ -485,15 +216,9 @@
             try {
                 const resp = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: authHeaders(),
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: text }),
                 });
-
-                if (resp.status === 401) {
-                    addMessage('error', 'Authentication failed. Please sign in again.');
-                    signOut();
-                    return;
-                }
 
                 const data = await resp.json();
 
@@ -519,16 +244,7 @@
         });
 
         // ── Boot ──
-        // Wait for GIS script to load, then init
-        function boot() {
-            if (typeof google !== 'undefined' && google.accounts) {
-                initAuth();
-            } else {
-                // GIS script not yet loaded, retry
-                setTimeout(boot, 100);
-            }
-        }
-        boot();
+        initChat();
     </script>
 </body>
 </html>
