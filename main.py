@@ -470,14 +470,20 @@ def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
         now = datetime.now(timezone.utc)
         start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
         end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        resp = requests.post(
-            f"{SECOPS_BASE_URL}/dashboardQueries:execute",
+        resp = requests.get(
+            f"{SECOPS_BASE_URL}:udmSearch",
             headers=_secops_headers(),
-            json={"dashboardQuery": {"yaraLQuery": query, "timeRange": {"startTime": start, "endTime": end}}},
+            params={
+                "query": query,
+                "time_range.start_time": start,
+                "time_range.end_time": end,
+            },
             timeout=30,
         )
         if resp.status_code == 200:
-            return json.dumps({"status": "ok", "query": query, "result": resp.json()})
+            data = resp.json()
+            events = data.get("events", [])
+            return json.dumps({"status": "ok", "query": query, "unparsed_events": len(events), "events": events[:20]})
         return json.dumps({"error": f"API [{resp.status_code}]"})
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1089,16 +1095,21 @@ def search_security_events(text: str = "", query: str = "", hours_back: int = 24
         now = datetime.now(timezone.utc)
         start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
         end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        resp = requests.post(
-            f"{SECOPS_BASE_URL}/dashboardQueries:execute",
+        resp = requests.get(
+            f"{SECOPS_BASE_URL}:udmSearch",
             headers=_secops_headers(),
-            json={"dashboardQuery": {"yaraLQuery": udm_query, "timeRange": {"startTime": start, "endTime": end}}},
+            params={
+                "query": udm_query,
+                "time_range.start_time": start,
+                "time_range.end_time": end,
+                "limit": max_events,
+            },
             timeout=60,
         )
         if resp.status_code == 200:
             data = resp.json()
             events = data.get("events", data.get("results", []))[:max_events]
-            return json.dumps({"natural_language_query": text, "udm_query": udm_query, "events": events, "count": len(events)})
+            return json.dumps({"natural_language_query": search_text, "udm_query": udm_query, "events": events, "count": len(events)})
         return json.dumps({"error": f"SecOps search failed [{resp.status_code}]", "udm_query": udm_query, "detail": resp.text[:500]})
     except Exception as e:
         return json.dumps({"error": str(e)})
