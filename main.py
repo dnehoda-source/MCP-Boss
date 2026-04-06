@@ -1092,9 +1092,10 @@ def search_security_events(text: str = "", query: str = "", hours_back: int = 24
         udm_query = gemini_resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
         udm_query = udm_query.strip("`").strip()
         
-        # Clean up the query: remove ORDER BY and LIMIT clauses (they're API params, not UDM syntax)
+        # Clean up the query: remove ORDER BY, LIMIT, and _limit clauses (they're API params, not UDM syntax)
         import re
-        udm_query_clean = re.sub(r'\s+(order\s+by|limit)\s+.*$', '', udm_query, flags=re.IGNORECASE)
+        udm_query_clean = re.sub(r'\s+(order\s+by|limit|_limit)\s+.*$', '', udm_query, flags=re.IGNORECASE)
+        udm_query_clean = re.sub(r'\s+_limit\s*=\s*\d+', '', udm_query_clean, flags=re.IGNORECASE)
         udm_query_clean = udm_query_clean.strip()
 
         # Step 2: Execute the UDM search
