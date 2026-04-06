@@ -401,21 +401,19 @@ def get_scc_findings(project_id: str = "", severity: str = "CRITICAL", max_resul
 
 
 @app_mcp.tool()
-def query_cloud_logging(project_id: str = "", filter_string: str = "", query: str = "", max_results: int = 10, hours_back: int = 24, start_time: str = "", end_time: str = "") -> str:
+def query_cloud_logging(project_id: str = "", filter_string: str = "", max_results: int = 10, hours_back: int = 24, start_time: str = "", end_time: str = "") -> str:
     """Query Google Cloud Logging for IAM changes, compute events, and audit trails with time range filtering."""
     try:
         project_id = validate_project_id(project_id or SECOPS_PROJECT_ID)
-        # Accept both 'filter_string' and 'query' parameters
-        final_filter = query or filter_string
-        if not final_filter or len(final_filter.strip()) < 3:
-            return json.dumps({"error": "Filter required", "detail": "Minimum 3 chars required."})
+        if not filter_string or len(filter_string.strip()) < 10:
+            return json.dumps({"error": "Filter required", "detail": "Cloud Logging filter syntax required (e.g., 'severity=ERROR AND logName:cloudaudit')"})
         
         # Parse time range
         start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
         
         # Add time range to filter
         time_filter = f'timestamp >= "{start_iso}" AND timestamp <= "{end_iso}"'
-        combined_filter = f"({final_filter}) AND {time_filter}"
+        combined_filter = f"({filter_string}) AND {time_filter}"
         
         client = cloud_logging.Client(project=project_id)
         entries = client.list_entries(filter_=combined_filter, max_results=min(max_results, 50))
@@ -1743,7 +1741,7 @@ def list_log_views(bucket_id: str = "_Default", location: str = "global") -> str
 
 
 @app_mcp.tool()
-def query_secops_audit_logs(project_id: str = "", query: str = "", hours_back: int = 24, log_type: str = "siem") -> str:
+def query_secops_audit_logs(project_id: str = "", hours_back: int = 24, log_type: str = "siem") -> str:
     """Query SecOps SIEM or SOAR audit logs from Cloud Logging. Finds rule errors, playbook failures, feed issues, and user activity."""
     try:
         project_id = validate_project_id(project_id)
