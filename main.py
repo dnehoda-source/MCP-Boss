@@ -1122,25 +1122,27 @@ def search_security_events(text: str = "", query: str = "", hours_back: int = 24
 
 
 @app_mcp.tool()
-def get_security_alerts(hours_back: int = 24, max_alerts: int = 10) -> str:
+def get_security_alerts(hours_back: int = 24, max_alerts: int = 10, limit: int = 0) -> str:
     """Retrieve recent security alerts from Google SecOps with time filtering."""
     try:
         hours_back = min(max(1, hours_back), 8760)
-        max_alerts = min(max(1, max_alerts), 1000)
+        # Accept both 'max_alerts' and 'limit' parameters
+        alert_limit = limit if limit > 0 else max_alerts
+        alert_limit = min(max(1, alert_limit), 1000)
         now = datetime.now(timezone.utc)
         start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
         end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         resp = requests.get(
             f"{SECOPS_BASE_URL}/alerts",
             headers=_secops_headers(),
-            params={"startTime": start, "endTime": end, "pageSize": max_alerts},
+            params={"startTime": start, "endTime": end, "pageSize": alert_limit},
             timeout=30,
         )
         if resp.status_code == 200:
             data = resp.json()
             alerts = data.get("alerts", [])
             formatted = []
-            for a in alerts[:max_alerts]:
+            for a in alerts[:alert_limit]:
                 formatted.append({
                     "id": a.get("name", a.get("alertId", "")),
                     "rule_name": a.get("ruleName", a.get("detection", {}).get("ruleName", "unknown")),
