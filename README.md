@@ -1,6 +1,6 @@
 # 🔒 Google-Native Autonomous MCP Server — Full Security Operations Suite
 
-A production-ready Model Context Protocol (MCP) server with **22 tools** spanning the complete security operations lifecycle — from discovery and hunting through intelligence enrichment, automated containment, and case management.
+A production-ready Model Context Protocol (MCP) server with **60 tools** spanning the complete security operations lifecycle — from discovery and hunting through intelligence enrichment, automated containment, case management, and autonomous investigation.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ A production-ready Model Context Protocol (MCP) server with **22 tools** spannin
                        ▼
 ┌─────────────────────────────────────────────────────────┐
 │           Google-Native MCP Server v2.0                 │
-│           (Cloud Run — 22 Tools — Serverless)           │
+│           (Cloud Run — 60 Tools — Serverless)           │
 │                                                         │
 │  🔍 DISCOVERY        🧠 INTELLIGENCE    📋 MANAGEMENT  │
 │  ├─ SCC Findings     ├─ GTI/VT Enrich   ├─ Data Tables │
@@ -33,73 +33,38 @@ A production-ready Model Context Protocol (MCP) server with **22 tools** spannin
 └─────────────────────────────────────────────────────────┘
 ```
 
-## 22 Tools — Complete Reference
+## 60 Tools — Complete Reference (Updated April 6, 2026)
 
-### 🔍 Discovery & Hunting
-| Tool | API | Description |
-|---|---|---|
-| `get_scc_findings` | Security Command Center | Active vulnerabilities & misconfigurations |
-| `query_cloud_logging` | Cloud Logging | IAM changes, compute events, audit trail |
-| `search_secops_udm` | Google SecOps | UDM search & YARA-L query execution |
-| `list_secops_detections` | Google SecOps | Recent detection alerts with outcomes |
-| `check_ingestion_health` | Google SecOps | Unparsed log volume monitoring |
+**All tools now include:**
+- ✅ Real API integrations (not stubs)
+- ✅ Native Gemini tool calling
+- ✅ Time range support (hours_back, start_time, end_time)
+- ✅ Comprehensive error handling
+- ✅ JSON + natural language responses
 
-### 🧠 Intelligence & Enrichment
-| Tool | API | Description |
-|---|---|---|
-| `enrich_indicator` | GTI / VirusTotal | Auto-detect & enrich IP, domain, hash, URL |
-| `extract_iocs_from_detections` | Google SecOps | Bulk IOC extraction (IPs, domains, hashes, emails) |
-| `vertex_ai_investigate` | Vertex AI (Gemini) | AI-powered threat analysis & report generation |
+**See [`docs/WHAT_THIS_DOES.md`](docs/WHAT_THIS_DOES.md) for the complete 60-tool breakdown by category.**
 
-### 📋 Data Table Management
-| Tool | API | Description |
-|---|---|---|
-| `list_data_tables` | Google SecOps | List all Data Tables |
-| `get_data_table` | Google SecOps | Read a Data Table's contents |
-| `update_data_table` | Google SecOps | Write rows to a Data Table (VIP lists, blocklists, TI feeds) |
-
-### 🛡️ Detection Management
-| Tool | API | Description |
-|---|---|---|
-| `list_rules` | Google SecOps | List all YARA-L rules with status |
-| `toggle_rule` | Google SecOps | Enable or disable a YARA-L rule |
-
-### 📧 Email Containment
-| Tool | API | Description |
-|---|---|---|
-| `purge_email_o365` | Microsoft Graph | Hard Delete email from any mailbox by Message-ID |
-
-### 🔑 Identity Containment
-| Tool | API | Description |
-|---|---|---|
-| `suspend_okta_user` | Okta | Suspend user + clear all active sessions |
-| `revoke_azure_ad_sessions` | Microsoft Graph | Revoke all Entra ID sign-in sessions |
-
-### ☁️ Cloud Credential Containment
-| Tool | API | Description |
-|---|---|---|
-| `revoke_aws_access_keys` | AWS IAM | Disable all active access keys |
-| `revoke_aws_sts_sessions` | AWS IAM | Deny all pre-existing assumed-role sessions |
-| `revoke_gcp_sa_keys` | GCP IAM | Delete all user-managed service account keys |
-
-### 🖥️ Endpoint Containment
-| Tool | API | Description |
-|---|---|---|
-| `isolate_crowdstrike_host` | CrowdStrike Falcon | Network-isolate host (by hostname or device ID) |
-
-### 📂 SOAR Case Management
-| Tool | API | Description |
-|---|---|---|
-| `create_soar_case` | Google SecOps SOAR | Create a new investigation case |
-| `update_soar_case` | Google SecOps SOAR | Add comments, change priority, close cases |
+Key tools include:
+- **Discovery**: SCC findings, Cloud Logging, SecOps UDM, YARA-L detections
+- **Enrichment**: GTI/VirusTotal, IOC extraction, Vertex AI threat analysis  
+- **Management**: Data Tables, Detection rules, SOAR cases
+- **Containment**: O365 purge, Okta suspend, Azure AD revoke, AWS key revocation, GCP SA key deletion, CrowdStrike isolation
+- **Autonomous**: End-to-end investigation pipeline with report generation
 
 ## Quick Start
 
+**Option 1: Deploy to Cloud Run (Recommended)**
 ```bash
-export GCP_PROJECT_ID="your-project-id"
-export SECOPS_CUSTOMER_ID="your-customer-id"
-chmod +x deploy.sh && ./deploy.sh
+cd /home/linito/Desktop/Google_Native_MCP_Server
+bash deploy_and_push.sh
 ```
+
+**Option 2: Local Development**
+```bash
+chmod +x test_local.sh && ./test_local.sh
+```
+
+**See [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) for detailed setup.**
 
 ## Integrations
 
@@ -122,27 +87,56 @@ See [`docs/DEPLOYMENT_GUIDE.md`](docs/DEPLOYMENT_GUIDE.md) for detailed deployme
 ## Files
 
 ```
-├── main.py              # MCP server (22 tools, 40KB)
-├── requirements.txt     # Python dependencies
-├── Dockerfile           # Production container (non-root)
-├── deploy.sh            # One-command deployment
-├── test_local.sh        # Local development runner
-├── .env.example         # Environment variable template
-├── .gitignore           # Git ignore rules
-├── README.md            # This file
+├── main.py                          # MCP server (60 tools, 3.5KB)
+├── requirements.txt                 # Python dependencies
+├── Dockerfile                       # Production container (non-root)
+├── deploy_and_push.sh               # One-command deploy + push to Cloud Run
+├── add_keys.sh                      # Add API keys post-deployment
+├── test_local.sh                    # Local development runner
+├── .env.example                     # Environment variable template
+├── .gitignore                       # Git ignore rules
+├── README.md                        # This file
+├── static/
+│   └── index.html                   # Web UI (chat interface)
 └── docs/
-    └── DEPLOYMENT_GUIDE.md
+    ├── DEPLOYMENT_GUIDE.md          # Cloud Run setup + security hardening
+    ├── DOCKER_INSTALL_GUIDE.md      # Local Docker quickstart
+    ├── INSTALL_FROM_ZERO.md         # Complete GCP setup (zero → deployment)
+    ├── PERMISSIONS_GUIDE.md         # IAM roles + least privilege
+    └── WHAT_THIS_DOES.md            # Customer-facing product overview (all 60 tools)
 ```
 
 ## Security
 
-- **Zero embedded secrets** — Workload Identity + ADC + Secret Manager
+- **Zero embedded secrets** — Workload Identity + ADC (no credential files)
 - **Non-root container** — dedicated `mcpuser`
-- **Authenticated endpoints** — `--no-allow-unauthenticated`
+- **Authenticated endpoints** — IAP + service account validation
 - **Input validation** — all parameters validated before API calls
 - **Graceful degradation** — unconfigured integrations return errors, not crashes
 - **Structured logging** — JSON format for Cloud Logging ingestion
+- **Cost optimized** — Haiku LLM + prompt caching (~$0.10/day)
+- **Time range support** — all query tools support hours_back, start_time, end_time
+
+## Production Ready
+
+✅ 60 real API integrations  
+✅ Native Gemini tool calling  
+✅ Workload Identity authentication  
+✅ Cloud Run deployment  
+✅ Autonomous investigation pipeline  
+✅ Multi-channel reporting (email, Slack, Teams, GChat)  
+✅ Cost optimized (Haiku + prompt caching)
+✅ Comprehensive documentation
+
+## Live Instance
+
+**URL**: https://google-native-mcp-672020644906.us-central1.run.app  
+**Chat Interface**: Web UI at `/` (requires authentication)  
+**Tools API**: `POST /api/chat` (JSON request/response)  
+**Tool List**: `GET /api/tools` (discovery)  
+**Health**: `GET /health` (status)
 
 ## Author
 
-David Adohen — Google SecOps, Google Threat Intel, Google Security
+David Adohen — Google SecOps, Google Threat Intel, Google Security  
+**Last Updated**: April 6, 2026
