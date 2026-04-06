@@ -352,7 +352,8 @@ def parse_time_range(hours_back: int = 24, start_time: str = "", end_time: str =
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DISABLED: Requires special SCC configuration
+# @app_mcp.tool()
 def get_scc_findings(project_id: str = "", severity: str = "CRITICAL", max_results: int = 10, state: str = "ACTIVE", hours_back: int = 720) -> str:
     """Fetch vulnerabilities from Security Command Center. Filters by severity and state (ACTIVE, INACTIVE, RESOLVED) with optional time range filtering."""
     try:
@@ -533,7 +534,8 @@ def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DISABLED: Requires GTI/VirusTotal configuration
+# @app_mcp.tool()
 def enrich_indicator(indicator: str, indicator_type: str = "auto") -> str:
     """Enrich an IP, domain, URL, or file hash using Google Threat Intel / VirusTotal."""
     try:
@@ -1368,7 +1370,8 @@ def get_ip_report(ip_address: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Requires GTI subscription
+# @app_mcp.tool()
 def search_threat_actors(query: str, limit: int = 10) -> str:
     """Search for threat actor profiles in VirusTotal/GTI intelligence. Returns matching threat actor names, descriptions, and associated indicators."""
     try:
@@ -1404,7 +1407,8 @@ def search_threat_actors(query: str, limit: int = 10) -> str:
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Requires GTI subscription
+# @app_mcp.tool()
 def search_malware_families(query: str, limit: int = 10) -> str:
     """Search for malware family profiles in VirusTotal/GTI intelligence. Returns matching family names, descriptions, and classification."""
     try:
