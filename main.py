@@ -1,6 +1,6 @@
 """
-Google-Native Autonomous MCP Server — Full Security Operations Suite
-=====================================================================
+Automated SOC MCP Server — Full Security Operations Suite
+===========================================================
 The complete autonomous security operations toolkit bridging every Google Cloud
 Security pillar plus third-party containment APIs into a single MCP endpoint.
 

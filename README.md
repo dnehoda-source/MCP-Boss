@@ -1,4 +1,4 @@
-# 🔒 Google-Native Autonomous MCP Server — Full Security Operations Suite
+# 🔒 Automated SOC MCP Server — Full Security Operations Suite
 
 A production-ready Model Context Protocol (MCP) server with **60 tools** spanning the complete security operations lifecycle — from discovery and hunting through intelligence enrichment, automated containment, case management, and autonomous investigation.
 
@@ -12,7 +12,7 @@ A production-ready Model Context Protocol (MCP) server with **60 tools** spannin
                        │ SSE (Server-Sent Events)
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│           Google-Native MCP Server v2.0                 │
+│           Automated SOC MCP Server v2.0                 │
 │           (Cloud Run — 60 Tools — Serverless)           │
 │                                                         │
 │  🔍 DISCOVERY        🧠 INTELLIGENCE    📋 MANAGEMENT  │
