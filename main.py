@@ -1106,7 +1106,8 @@ def update_soar_case(
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DEPRECATED: Use udm_search instead
+# @app_mcp.tool()
 def search_security_events(text: str = "", query: str = "", hours_back: int = 24, time_range: str = "", timerange: str = "", max_events: int = 100) -> str:
     """[SECOPS CHRONICLE] Search UDM for logins, malware, threats. Translates natural language to UDM: metadata.event_type=USER_LOGIN, security_result.action=ALLOW, etc."""
     try:
