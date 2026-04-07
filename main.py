@@ -429,7 +429,7 @@ def query_cloud_logging(project_id: str = "", filter_string: str = "", query: st
 
 @app_mcp.tool()
 def search_secops_udm(query: str = "", udm_query: str = "", hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "") -> str:
-    """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""}]}
+    """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""
     try:
         final_query = query or udm_query
         if not final_query or len(final_query.strip()) < 5:
