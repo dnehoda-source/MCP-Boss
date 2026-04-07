@@ -318,10 +318,15 @@ def create_case(
 # ════════════════════════════════════════════════════════════════
 
 @server.call_tool()
-def get_last_logins(count: int = 5, N: int = 0) -> str:
+def get_last_logins(count: int = 5, N: int = 0, n: int = 0, num_events: int = 0, num_logins: int = 0) -> str:
     """Get the last N user login events."""
-    # Handle both 'count' and 'N' parameter names
-    count = count if count != 5 else (N if N > 0 else 5)
+    # Handle multiple parameter name variations from different callers
+    final_count = count
+    for param in [N, n, num_events, num_logins]:
+        if param > 0:
+            final_count = param
+            break
+    count = final_count
     try:
         chronicle = get_chronicle_client()
         events = chronicle.query_events(
@@ -340,9 +345,14 @@ def get_last_logins(count: int = 5, N: int = 0) -> str:
 
 
 @server.call_tool()
-def get_last_cases(count: int = 5, N: int = 0) -> str:
+def get_last_cases(count: int = 5, N: int = 0, n: int = 0, num_cases: int = 0) -> str:
     """Get the last N SOAR cases."""
-    count = count if count != 5 else (N if N > 0 else 5)
+    final_count = count
+    for param in [N, n, num_cases]:
+        if param > 0:
+            final_count = param
+            break
+    count = final_count
     try:
         chronicle = get_chronicle_client()
         cases = chronicle.list_cases(page_size=count)
@@ -358,9 +368,14 @@ def get_last_cases(count: int = 5, N: int = 0) -> str:
 
 
 @server.call_tool()
-def get_last_detections(count: int = 5, N: int = 0) -> str:
+def get_last_detections(count: int = 5, N: int = 0, n: int = 0, num_detections: int = 0) -> str:
     """Get the last N detection alerts."""
-    count = count if count != 5 else (N if N > 0 else 5)
+    final_count = count
+    for param in [N, n, num_detections]:
+        if param > 0:
+            final_count = param
+            break
+    count = final_count
     try:
         chronicle = get_chronicle_client()
         detections = chronicle.list_detections(page_size=count)
