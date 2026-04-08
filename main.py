@@ -165,6 +165,46 @@ from google.api_core.exceptions import (
 )
 from mcp.server.fastmcp import FastMCP
 from datetime import datetime, timedelta, timezone
+import uuid
+
+# ═══════════════════════════════════════════════════════════════
+# SESSION MEMORY (In-Memory Store)
+# ═══════════════════════════════════════════════════════════════
+
+class SessionMemory:
+    """Store context/state for a session."""
+    def __init__(self):
+        self.sessions = {}
+    
+    def create_session(self):
+        session_id = str(uuid.uuid4())
+        self.sessions[session_id] = {
+            'created': datetime.now(timezone.utc),
+            'last_case_id': None,
+            'last_alert_id': None,
+            'last_ip': None,
+            'last_user': None,
+            'last_domain': None,
+            'investigation_notes': [],
+            'context': {}
+        }
+        return session_id
+    
+    def get_session(self, session_id):
+        return self.sessions.get(session_id)
+    
+    def update_session(self, session_id, key, value):
+        if session_id in self.sessions:
+            self.sessions[session_id][key] = value
+    
+    def add_note(self, session_id, note):
+        if session_id in self.sessions:
+            self.sessions[session_id]['investigation_notes'].append({
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'note': note
+            })
+
+session_store = SessionMemory()
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
@@ -212,6 +252,51 @@ logger = logging.getLogger("google-native-mcp")
 # ═══════════════════════════════════════════════════════════════
 
 app_mcp = FastMCP("google-native-mcp", json_response=True)
+
+# Session management endpoints
+@app_mcp.tool()
+def create_session() -> str:
+    """Create a new session for maintaining context across multiple queries."""
+    session_id = session_store.create_session()
+    return json.dumps({"session_id": session_id, "status": "created"})
+
+@app_mcp.tool()
+def get_session(session_id: str) -> str:
+    """Get current session state and investigation notes."""
+    session = session_store.get_session(session_id)
+    if not session:
+        return json.dumps({"error": "Session not found"})
+    return json.dumps(session, default=str)
+
+@app_mcp.tool()
+def set_session_context(session_id: str, case_id: str = "", alert_id: str = "", ip: str = "", user: str = "", domain: str = "") -> str:
+    """Update session context with investigation targets."""
+    session = session_store.get_session(session_id)
+    if not session:
+        return json.dumps({"error": "Session not found"})
+    
+    if case_id:
+        session_store.update_session(session_id, 'last_case_id', case_id)
+    if alert_id:
+        session_store.update_session(session_id, 'last_alert_id', alert_id)
+    if ip:
+        session_store.update_session(session_id, 'last_ip', ip)
+    if user:
+        session_store.update_session(session_id, 'last_user', user)
+    if domain:
+        session_store.update_session(session_id, 'last_domain', domain)
+    
+    return json.dumps({"status": "updated", "session_id": session_id})
+
+@app_mcp.tool()
+def add_investigation_note(session_id: str, note: str) -> str:
+    """Add an investigation note to the session."""
+    session = session_store.get_session(session_id)
+    if not session:
+        return json.dumps({"error": "Session not found"})
+    
+    session_store.add_note(session_id, note)
+    return json.dumps({"status": "note_added", "total_notes": len(session['investigation_notes'])})
 
 # ═══════════════════════════════════════════════════════════════
 # HELPERS
