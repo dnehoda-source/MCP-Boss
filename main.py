@@ -515,7 +515,8 @@ def query_cloud_logging(project_id: str = "", filter_string: str = "", query: st
         return json.dumps({"error": type(e).__name__, "detail": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def udm_search(query: str = "", udm_query: str = "", hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "") -> str:
     """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""
     try:
@@ -555,7 +556,8 @@ def udm_search(query: str = "", udm_query: str = "", hours_back: int = 24, max_e
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_time: str = "", end_time: str = "") -> str:
     """List recent YARA-L detection alerts with rule names, severity, and outcomes with time range filtering."""
     try:
@@ -587,7 +589,8 @@ def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_ti
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
     """
     Check for unparsed logs in SecOps. If log_type is provided, checks that specific source.
@@ -624,8 +627,9 @@ def check_ingestion_health(log_type: str = "", hours_back: int = 1) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
-def enrich_indicator(indicator: str = "", value: str = "", indicator_type: str = "auto") -> str:
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
+def enrich_indicator(indicator: str = "", value: str = "", indicator_type: str = "auto", type: str = "") -> str:
     """Enrich an IP, domain, URL, or file hash using Google Threat Intel / VirusTotal."""
     try:
         # Accept both 'indicator' and 'value' parameters
@@ -671,7 +675,8 @@ def enrich_indicator(indicator: str = "", value: str = "", indicator_type: str =
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def extract_iocs_from_detections(hours_back: int = 24) -> str:
     """
     Bulk extract all IOCs (IPs, domains, hashes, emails) from recent detections.
@@ -757,7 +762,8 @@ Reference UDM fields, MITRE ATT&CK techniques, and Google SecOps capabilities.""
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def list_data_tables() -> str:
     """List all Data Tables in the SecOps instance."""
     try:
@@ -769,7 +775,8 @@ def list_data_tables() -> str:
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def get_data_table(table_name: str) -> str:
     """Read the contents of a specific Data Table."""
     try:
@@ -782,7 +789,8 @@ def get_data_table(table_name: str) -> str:
         return json.dumps({"error": str(e)})
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def update_data_table(table_name: str, rows: list, description: str = "") -> str:
     """
     Update a Data Table with new rows. Overwrites existing content.
@@ -811,7 +819,8 @@ def update_data_table(table_name: str, rows: list, description: str = "") -> str
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def list_rules(page_size: int = 100, limit: int = 0, max_results: int = 0, count: int = 0) -> str:
     """List all YARA-L rules in the SecOps instance with their enabled/disabled status."""
     try:
@@ -1195,6 +1204,7 @@ def update_soar_case(
 
 
 # DEPRECATED: Use udm_search instead
+# # DISABLED: Raw API endpoint not working
 # @app_mcp.tool()
 def search_security_events(text: str = "", query: str = "", hours_back: int = 24, time_range: str = "", timerange: str = "", max_events: int = 100) -> str:
     """[SECOPS CHRONICLE] Search UDM for logins, malware, threats. Translates natural language to UDM: metadata.event_type=USER_LOGIN, security_result.action=ALLOW, etc."""
@@ -1643,7 +1653,8 @@ def get_finding_remediation(project_id: str = "", finding_id: str = "") -> str:
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def list_cases() -> str:
     """List all SOAR cases from Google SecOps. Returns case IDs, titles, priorities, and statuses."""
     try:
@@ -3125,7 +3136,8 @@ def _call_mcp_server(mcp_url: str, tool_name: str, arguments: dict) -> str:
 
 # ── SECOPS MCP TOOLS (10 tools) ──
 
-@app_mcp.tool()
+# DISABLED: Raw API endpoint not working
+# @app_mcp.tool()
 def secops_list_cases(limit: int = 100) -> str:
     """List all cases from SecOps MCP. Returns case IDs, titles, and statuses via official SecOps MCP server."""
     try:
