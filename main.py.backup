@@ -428,8 +428,8 @@ def query_cloud_logging(project_id: str = "", filter_string: str = "", query: st
 
 
 @app_mcp.tool()
-def search_secops_udm(query: str = "", udm_query: str = "", hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "") -> str:
-    """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""}]}
+def udm_search(query: str = "", udm_query: str = "", hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "") -> str:
+    """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""
     try:
         final_query = query or udm_query
         if not final_query or len(final_query.strip()) < 5:
@@ -1106,7 +1106,8 @@ def update_soar_case(
 # ═══════════════════════════════════════════════════════════════
 
 
-@app_mcp.tool()
+# DEPRECATED: Use udm_search instead
+# @app_mcp.tool()
 def search_security_events(text: str = "", query: str = "", hours_back: int = 24, time_range: str = "", timerange: str = "", max_events: int = 100) -> str:
     """[SECOPS CHRONICLE] Search UDM for logins, malware, threats. Translates natural language to UDM: metadata.event_type=USER_LOGIN, security_result.action=ALLOW, etc."""
     try:
@@ -2267,7 +2268,7 @@ def create_containment_playbook(
                 "trigger_filter": "rule_name STARTS_WITH 'Auto_IOC_IP_'",
                 "steps": [
                     {"action": "enrich_indicator", "description": "Enrich IP via VirusTotal/GTI"},
-                    {"action": "search_secops_udm", "description": "Search for all events involving this IP"},
+                    {"action": "udm_search", "description": "Search for all events involving this IP"},
                     {"action": "update_data_table", "description": "Add IP to automated_blocklist Data Table"},
                     {"action": "isolate_crowdstrike_host", "description": "Isolate affected endpoints (requires approval)", "requires_approval": True},
                     {"action": "add_case_comment", "description": "Document investigation findings"},
@@ -2286,7 +2287,7 @@ def create_containment_playbook(
                 "steps": [
                     {"action": "enrich_indicator", "description": "Enrich domain via GTI"},
                     {"action": "get_domain_report", "description": "Get full domain reputation report"},
-                    {"action": "search_secops_udm", "description": "Find users who accessed this domain"},
+                    {"action": "udm_search", "description": "Find users who accessed this domain"},
                     {"action": "update_data_table", "description": "Add domain to blocklist Data Table"},
                     {"action": "suspend_okta_user", "description": "Suspend affected users (requires approval)", "requires_approval": True},
                     {"action": "add_case_comment", "description": "Document findings and actions"},
@@ -2303,7 +2304,7 @@ def create_containment_playbook(
                 "trigger_filter": "rule_name STARTS_WITH 'Auto_IOC_Hash_'",
                 "steps": [
                     {"action": "get_file_report", "description": "Full VirusTotal file analysis"},
-                    {"action": "search_secops_udm", "description": "Find all hosts that executed this file"},
+                    {"action": "udm_search", "description": "Find all hosts that executed this file"},
                     {"action": "isolate_crowdstrike_host", "description": "Isolate infected endpoints (requires approval)", "requires_approval": True},
                     {"action": "update_data_table", "description": "Add hash to blocklist Data Table"},
                     {"action": "add_case_comment", "description": "Document findings"},
@@ -2323,7 +2324,7 @@ def create_containment_playbook(
                 "steps": [
                     {"action": "enrich_indicator", "description": "Enrich phishing URLs via GTI"},
                     {"action": "purge_email_o365", "description": "Hard Delete email from all inboxes"},
-                    {"action": "search_secops_udm", "description": "Check if anyone clicked the link"},
+                    {"action": "udm_search", "description": "Check if anyone clicked the link"},
                     {"action": "suspend_okta_user", "description": "Suspend users who clicked (requires approval)", "requires_approval": True},
                     {"action": "revoke_azure_ad_sessions", "description": "Revoke Azure AD sessions for clickers"},
                     {"action": "add_case_comment", "description": "Full forensic documentation"},
@@ -3783,5 +3784,60 @@ def create_detection_rule_for_scc_finding(finding_category: str, resource: str =
                 "note": "Rule generated but API deployment failed. Paste the rule_text into SecOps UI manually.",
             })
     
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🎯 SIMPLE INTENT-BASED TOOLS (Using SecOpsClient Library)
+# ═══════════════════════════════════════════════════════════════
+
+from secops import SecOpsClient
+
+@app_mcp.tool()
+def get_last_logins(count: int = 5) -> str:
+    """Get the last N user login events. Use for: 'last 5 logins', 'last 10 logins'."""
+    try:
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
+        )
+        events = chronicle.query_events(
+            query='metadata.event_type = "USER_LOGIN"',
+            max_results=count
+        )
+        return json.dumps({"count": len(events), "events": events})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+@app_mcp.tool()
+def get_last_cases(count: int = 5) -> str:
+    """Get the last N SOAR cases. Use for: 'last 5 cases', 'last 10 cases'."""
+    try:
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
+        )
+        cases = chronicle.list_cases(page_size=count)
+        return json.dumps({"count": len(cases), "cases": cases})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+@app_mcp.tool()
+def get_last_detections(count: int = 5, num_detections: int = 0) -> str:
+    """Get the last N detection alerts. Use for: 'last 5 detections', 'last 10 detections'."""
+    try:
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
+        )
+        detections = chronicle.list_detections(page_size=count)
+        return json.dumps({"count": len(detections), "detections": detections})
     except Exception as e:
         return json.dumps({"error": str(e)})
