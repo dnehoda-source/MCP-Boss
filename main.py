@@ -609,7 +609,6 @@ def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_ti
     """List recent YARA-L detection alerts with rule names, severity, and outcomes with time range filtering."""
     try:
         max_results = min(max(1, max_results), 1000)
-        # Parse time range
         start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
         start_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
         end_dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
@@ -620,13 +619,36 @@ def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_ti
             project_id=SECOPS_PROJECT_ID,
             region=SECOPS_REGION
         )
-        result = chronicle.list_detections(
-            page_size=max_results,
-            start_time=start_dt,
-            end_time=end_dt
-        )
-        detections = result.get('detections', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
-        return json.dumps({"detections": detections[:max_results], "count": len(detections), "time_range": {"start": start_iso, "end": end_iso}})
+        # Get all rules first, then search for alerts across them
+        all_detections = []
+        try:
+            rules = chronicle.list_rules(page_size=100)
+            rule_list = rules.get('rules', []) if isinstance(rules, dict) else (rules if isinstance(rules, list) else [])
+            for rule in rule_list[:20]:  # Check top 20 rules
+                rule_id = rule.get('name', '').split('/')[-1] if isinstance(rule, dict) else str(rule)
+                if not rule_id:
+                    continue
+                try:
+                    dets = chronicle.list_detections(rule_id=rule_id, page_size=min(max_results, 50), start_time=start_dt, end_time=end_dt)
+                    det_list = dets.get('detections', []) if isinstance(dets, dict) else (dets if isinstance(dets, list) else [])
+                    for d in det_list:
+                        if isinstance(d, dict):
+                            d['_rule_name'] = rule.get('displayName', rule.get('name', 'unknown')) if isinstance(rule, dict) else 'unknown'
+                    all_detections.extend(det_list)
+                except Exception:
+                    continue
+                if len(all_detections) >= max_results:
+                    break
+        except Exception as e2:
+            # Fallback: search via UDM for detection events
+            result = chronicle.search_udm(
+                query='metadata.event_type = "RULE_DETECTION"',
+                start_time=start_dt, end_time=end_dt, max_events=max_results
+            )
+            events = result.get('events', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+            return json.dumps({"detections": events[:max_results], "count": len(events), "source": "udm_fallback", "time_range": {"start": start_iso, "end": end_iso}})
+        
+        return json.dumps({"detections": all_detections[:max_results], "count": len(all_detections), "time_range": {"start": start_iso, "end": end_iso}})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1198,21 +1220,35 @@ def create_soar_case(
 ) -> str:
     """Create a new case in Google SecOps SOAR."""
     try:
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
+        )
+        # Use ingest_udm or trigger_investigation to create cases via SDK
+        # SecOpsClient doesn't have a direct create_case, so use the REST API via chronicle session
+        v1_base = (
+            f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1"
+            f"/projects/{SECOPS_PROJECT_ID}/locations/{SECOPS_REGION}"
+            f"/instances/{SECOPS_CUSTOMER_ID}"
+        )
+        token = get_adc_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         resp = requests.post(
-            f"{SECOPS_BASE_URL}/cases",
-            headers=_secops_headers(),
+            f"{v1_base}/cases",
+            headers=headers,
             json={
                 "displayName": title,
                 "description": description,
-                "priority": priority.upper(),
-                "alertSource": alert_source,
+                "priority": f"PRIORITY_{priority.upper()}" if not priority.upper().startswith("PRIORITY_") else priority.upper(),
             },
             timeout=15,
         )
         if resp.status_code in (200, 201):
-            logger.info(f"SOAR case created: {title}")
+            logger.info(f"Case created: {title}")
             return resp.text
-        return json.dumps({"error": f"Case creation failed [{resp.status_code}]", "detail": resp.text[:500]})
+        return json.dumps({"error": f"Case creation [{resp.status_code}]", "detail": resp.text[:500]})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -1229,46 +1265,52 @@ def update_soar_case(
     Update an existing SOAR case — add comments, change priority, or close.
 
     Args:
-        case_id: The case identifier
+        case_id: The case identifier (string)
         comment: Text to add to the case wall
         priority: New priority (CRITICAL, HIGH, MEDIUM, LOW)
         status: New status (OPEN, IN_PROGRESS, CLOSED)
         close_reason: Required when status=CLOSED
     """
     try:
+        case_id = str(case_id)
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
+        )
         results = []
 
+        if priority:
+            p = f"PRIORITY_{priority.upper()}" if not priority.upper().startswith("PRIORITY_") else priority.upper()
+            r = chronicle.patch_case(case_id, {"priority": p})
+            results.append(f"Priority updated to {p}")
+
+        if status:
+            update = {"status": status.upper()}
+            if close_reason:
+                update["closeReason"] = close_reason
+            r = chronicle.patch_case(case_id, update)
+            results.append(f"Status updated to {status.upper()}")
+
         if comment:
+            # Use the secops_create_case_comment equivalent
+            v1_base = (
+                f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1"
+                f"/projects/{SECOPS_PROJECT_ID}/locations/{SECOPS_REGION}"
+                f"/instances/{SECOPS_CUSTOMER_ID}"
+            )
+            token = get_adc_token()
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             resp = requests.post(
-                f"{SECOPS_BASE_URL}/cases/{case_id}/comments",
-                headers=_secops_headers(),
+                f"{v1_base}/cases/{case_id}/caseComments",
+                headers=headers,
                 json={"body": comment},
                 timeout=15,
             )
-            results.append(f"Comment: {resp.status_code}")
+            results.append(f"Comment added: {resp.status_code}")
 
-        if priority:
-            resp = requests.patch(
-                f"{SECOPS_BASE_URL}/cases/{case_id}",
-                headers=_secops_headers(),
-                json={"priority": priority.upper()},
-                timeout=15,
-            )
-            results.append(f"Priority: {resp.status_code}")
-
-        if status:
-            body = {"status": status.upper()}
-            if close_reason:
-                body["closeReason"] = close_reason
-            resp = requests.patch(
-                f"{SECOPS_BASE_URL}/cases/{case_id}",
-                headers=_secops_headers(),
-                json=body,
-                timeout=15,
-            )
-            results.append(f"Status: {resp.status_code}")
-
-        logger.info(f"SOAR case {case_id} updated: {results}")
+        logger.info(f"Case {case_id} updated: {results}")
         return json.dumps({"status": "updated", "case_id": case_id, "actions": results})
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1371,41 +1413,38 @@ def get_security_alerts(hours_back: int = 24, max_alerts: int = 10, limit: int =
     """Retrieve recent security alerts from Google SecOps with time filtering."""
     try:
         hours_back = min(max(1, hours_back), 8760)
-        # Accept any count/limit/max_results/max_alerts parameter
         alert_limit = count or max_results or limit or max_alerts
         alert_limit = min(max(1, alert_limit), 1000)
         now = datetime.now(timezone.utc)
-        start = (now - timedelta(hours=hours_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        resp = requests.get(
-            f"{SECOPS_BASE_URL}/alerts",
-            headers=_secops_headers(),
-            params={"startTime": start, "endTime": end, "pageSize": alert_limit},
-            timeout=30,
+        start_dt = now - timedelta(hours=hours_back)
+        client = SecOpsClient()
+        chronicle = client.chronicle(
+            customer_id=SECOPS_CUSTOMER_ID,
+            project_id=SECOPS_PROJECT_ID,
+            region=SECOPS_REGION
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            alerts = data.get("alerts", [])
-            formatted = []
-            for a in alerts[:alert_limit]:
-                formatted.append({
-                    "id": a.get("name", a.get("alertId", "")),
-                    "rule_name": a.get("ruleName", a.get("detection", {}).get("ruleName", "unknown")),
-                    "severity": a.get("severity", "unknown"),
-                    "create_time": a.get("createTime", ""),
-                    "status": a.get("status", ""),
-                    "description": (a.get("description", "") or "")[:500],
-                })
-            return json.dumps({"alerts": formatted, "count": len(formatted), "hours_back": hours_back})
-        return json.dumps({"error": f"Alerts API [{resp.status_code}]", "detail": resp.text[:500]})
+        result = chronicle.get_alerts(start_time=start_dt, end_time=now, page_size=alert_limit)
+        alerts = result.get('alerts', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
+        formatted = []
+        for a in alerts[:alert_limit]:
+            formatted.append({
+                "id": a.get("name", a.get("alertId", "")),
+                "rule_name": a.get("ruleName", a.get("detection", {}).get("ruleName", "unknown")),
+                "severity": a.get("severity", "unknown"),
+                "create_time": a.get("createTime", ""),
+                "status": a.get("feedbackStatus", a.get("status", "")),
+                "description": (a.get("description", "") or "")[:500],
+            })
+        return json.dumps({"alerts": formatted, "count": len(formatted), "hours_back": hours_back})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
 
 @app_mcp.tool()
-def lookup_entity(entity_value: str, hours_back: int = 24) -> str:
+def lookup_entity(entity_value: str = "", entity: str = "", value: str = "", hours_back: int = 24) -> str:
     """Look up an entity (IP, domain, user, hash) in Google SecOps. Returns risk score, associated alerts, and entity context."""
     try:
+        entity_value = entity_value or entity or value
         if not entity_value or len(entity_value.strip()) < 1:
             return json.dumps({"error": "Entity value is required"})
         hours_back = min(max(1, hours_back), 8760)
@@ -1949,6 +1988,7 @@ def list_log_views(project_id: str = "", bucket_id: str = "_Default", location: 
 def query_secops_audit_logs(project_id: str = "", hours_back: int = 24, log_type: str = "siem") -> str:
     """Query SecOps SIEM or SOAR audit logs from Cloud Logging. Finds rule errors, playbook failures, feed issues, and user activity."""
     try:
+        project_id = project_id or SECOPS_PROJECT_ID
         project_id = validate_project_id(project_id)
         hours_back = min(max(1, hours_back), 8760)
         now = datetime.now(timezone.utc)
@@ -2221,11 +2261,32 @@ def get_rule(rule_id: str) -> str:
 
 
 @app_mcp.tool()
-def list_rule_errors(rule_id: str) -> str:
-    """List errors for a specific YARA-L rule. Shows compilation failures, timeout errors, and execution issues."""
+def list_rule_errors(rule_id: str = "") -> str:
+    """List errors for a specific YARA-L rule. If no rule_id provided, checks all rules for errors."""
     try:
         if not rule_id:
-            return json.dumps({"error": "rule_id is required"})
+            # List all rules and check each for errors
+            client = SecOpsClient()
+            chronicle = client.chronicle(
+                customer_id=SECOPS_CUSTOMER_ID,
+                project_id=SECOPS_PROJECT_ID,
+                region=SECOPS_REGION
+            )
+            rules = chronicle.list_rules(page_size=100)
+            rule_list = rules.get('rules', []) if isinstance(rules, dict) else (rules if isinstance(rules, list) else [])
+            all_errors = []
+            for rule in rule_list[:50]:
+                rid = rule.get('name', '').split('/')[-1] if isinstance(rule, dict) else str(rule)
+                if not rid:
+                    continue
+                try:
+                    errs = chronicle.list_errors(rid)
+                    err_list = errs.get('errors', []) if isinstance(errs, dict) else (errs if isinstance(errs, list) else [])
+                    if err_list:
+                        all_errors.append({"rule_id": rid, "rule_name": rule.get('displayName', 'unknown') if isinstance(rule, dict) else 'unknown', "errors": err_list})
+                except Exception:
+                    continue
+            return json.dumps({"rules_with_errors": all_errors, "count": len(all_errors)})
         client = SecOpsClient()
         chronicle = client.chronicle(
             customer_id=SECOPS_CUSTOMER_ID,
@@ -2244,9 +2305,10 @@ def list_rule_errors(rule_id: str) -> str:
 
 
 @app_mcp.tool()
-def list_case_comments(case_id: str, page_size: int = 50) -> str:
+def list_case_comments(case_id: str = "", page_size: int = 50) -> str:
     """List all comments for a SOAR case with full history and filtering support."""
     try:
+        case_id = str(case_id) if case_id else ""
         if not case_id:
             return json.dumps({"error": "case_id is required"})
         page_size = min(max(1, page_size), 200)
@@ -2340,26 +2402,35 @@ def get_case_overview() -> str:
 def list_playbooks(page_size: int = 50) -> str:
     """List all SOAR playbooks in SecOps. Shows playbook names, triggers, and enabled status."""
     try:
-        # Playbooks API uses v1alpha
-        resp = requests.get(
-            f"{SECOPS_BASE_URL}/soarSettings/playbooks",
-            headers=_secops_headers(),
-            params={"pageSize": min(page_size, 100)},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            return resp.text
-        # Fallback: list from rules as playbooks may be stored differently
         client = SecOpsClient()
         chronicle = client.chronicle(
             customer_id=SECOPS_CUSTOMER_ID,
             project_id=SECOPS_PROJECT_ID,
             region=SECOPS_REGION
         )
+        # Try Chronicle v1 API for playbooks
+        v1_base = (
+            f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1"
+            f"/projects/{SECOPS_PROJECT_ID}/locations/{SECOPS_REGION}"
+            f"/instances/{SECOPS_CUSTOMER_ID}"
+        )
+        token = get_adc_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        resp = requests.get(
+            f"{v1_base}/playbooks",
+            headers=headers,
+            params={"pageSize": min(page_size, 100)},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            playbooks = data.get('playbooks', [])
+            return json.dumps({"playbooks": playbooks, "count": len(playbooks)})
+        # Fallback: show rules as proxy
         rules_result = chronicle.list_rules(page_size=page_size)
         rules_list = rules_result.get('rules', []) if isinstance(rules_result, dict) else []
-        rules_summary = [{"name": r.get('name', '').split('/')[-1], "enabled": r.get('enabled', False)} for r in rules_list]
-        return json.dumps({"note": "Playbooks API not available; showing detection rules", "rules": rules_summary, "count": len(rules_summary)})
+        rules_summary = [{"name": r.get('name', '').split('/')[-1], "displayName": r.get('displayName', ''), "enabled": r.get('enabled', False)} for r in rules_list]
+        return json.dumps({"note": "Playbooks endpoint returned non-200; showing detection rules as fallback", "rules": rules_summary, "count": len(rules_summary)})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -3490,7 +3561,7 @@ async def health_check(request: StarletteRequest):
     health = {
         "status": "healthy",
         "server": "google-native-mcp",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "tools": len(list(app_mcp._tool_manager.list_tools())),
         "project": SECOPS_PROJECT_ID,
         "region": SECOPS_REGION,
