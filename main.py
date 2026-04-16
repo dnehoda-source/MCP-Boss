@@ -2449,9 +2449,16 @@ def get_playbook(playbook_id: str) -> str:
     try:
         if not playbook_id:
             return json.dumps({"error": "playbook_id is required"})
+        v1_base = (
+            f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1"
+            f"/projects/{SECOPS_PROJECT_ID}/locations/{SECOPS_REGION}"
+            f"/instances/{SECOPS_CUSTOMER_ID}"
+        )
+        token = get_adc_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         resp = requests.get(
-            f"{SECOPS_BASE_URL}/playbooks/{playbook_id}",
-            headers=_secops_headers(),
+            f"{v1_base}/playbooks/{playbook_id}",
+            headers=headers,
             timeout=15,
         )
         if resp.status_code == 200:
@@ -2494,9 +2501,16 @@ def create_playbook(
         if trigger_filter:
             playbook_body["trigger"]["filter"] = trigger_filter
         
+        v1_base = (
+            f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1"
+            f"/projects/{SECOPS_PROJECT_ID}/locations/{SECOPS_REGION}"
+            f"/instances/{SECOPS_CUSTOMER_ID}"
+        )
+        token = get_adc_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         resp = requests.post(
-            f"{SECOPS_BASE_URL}/playbooks",
-            headers=_secops_headers(),
+            f"{v1_base}/playbooks",
+            headers=headers,
             json=playbook_body,
             timeout=15,
         )
@@ -3690,10 +3704,14 @@ async def api_tools(request: StarletteRequest):
     return JSONResponse(tool_list)
 
 
+MAX_ORCHESTRATION_TURNS = 20  # enough for complex multi-step hunts
+
+
 async def api_chat(request: StarletteRequest):
     """
-    Chat endpoint: takes natural language, uses Gemini with native tool_calls
-    to pick a tool, calls it, and returns the result with a summary.
+    Multi-turn orchestration chat endpoint.
+    Gemini calls tools in a loop until it produces a final text answer.
+    Supports complex pipelines like: GTI -> UDM -> SCC -> correlate -> report.
     """
     try:
         body = await request.json()
@@ -3701,7 +3719,7 @@ async def api_chat(request: StarletteRequest):
         if not user_msg:
             return JSONResponse({"error": "No message provided"}, status_code=400)
 
-        # Session handling — use cookie or X-Session-ID header, or auto-create
+        # Session handling
         session_id = (
             body.get("session_id")
             or request.headers.get("x-session-id")
@@ -3715,7 +3733,6 @@ async def api_chat(request: StarletteRequest):
         all_tools = app_mcp._tool_manager.list_tools()
         tool_declarations = []
         for tool in all_tools:
-            # Parse tool input schema if available
             properties = {}
             required = []
             if hasattr(tool, 'inputSchema'):
@@ -3723,212 +3740,155 @@ async def api_chat(request: StarletteRequest):
                 if isinstance(schema, dict):
                     properties = schema.get('properties', {})
                     required = schema.get('required', [])
-            
             tool_declarations.append({
                 "name": tool.name,
                 "description": tool.description or "No description",
                 "parameters": {
                     "type": "object",
                     "properties": properties,
-                    "required": required
-                }
+                    "required": required,
+                },
             })
 
-        token = get_adc_token()
         gemini_url = (
             f"https://us-central1-aiplatform.googleapis.com/v1/"
             f"projects/{SECOPS_PROJECT_ID}/locations/us-central1/"
             f"publishers/google/models/{GEMINI_MODEL}:generateContent"
         )
-        headers_ai = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        system_instruction = {
+            "parts": [{"text": (
+                "You are an elite security analyst with full access to SecOps (Chronicle SIEM), "
+                "Security Command Center (SCC), Google Threat Intelligence (GTI/VirusTotal), "
+                "Cloud Logging, SOAR case management, and cross-platform containment tools. "
+                "When given a complex investigation, call multiple tools in sequence — "
+                "do NOT stop after one tool call. Chain tools together to build a complete picture. "
+                "For threat actor hunts: 1) Look up threat intel, 2) Search SIEM for IOCs, "
+                "3) Check SCC for vulnerabilities, 4) Correlate findings, 5) Produce an executive summary. "
+                "If a tool returns no results or errors, try alternative approaches or aliases "
+                "(e.g., APT28 -> Fancy Bear -> STRONTIUM). "
+                f"Default project_id is {SECOPS_PROJECT_ID}. "
+                "When you have enough information, produce a clear final text summary — "
+                "that signals the end of the investigation. Be specific and actionable."
+            )}],
+        }
 
-        # Build conversation contents: history + current message
+        # Build initial conversation: history + current message
         history = session_store.get_history(session_id)
         contents = history + [{"role": "user", "parts": [{"text": user_msg}]}]
 
-        # Call Gemini with native functionDeclarations + conversation history
-        gemini_resp = requests.post(
-            gemini_url,
-            headers=headers_ai,
-            json={
-                "contents": contents,
-                "tools": [{"functionDeclarations": tool_declarations}],
-                "systemInstruction": {"parts": [{"text": (
-                    "You are a security analyst. You have access to tools that can help investigate security events. "
-                    "If the user's request requires a tool, call the appropriate tool with the right parameters. "
-                    "If no tool is needed, answer directly. "
-                    f"Default project_id is {SECOPS_PROJECT_ID} unless specified. "
-                    "Remember context from earlier in this conversation. "
-                    "Always provide clear reasoning for your actions."
-                )}]},
-            },
-            timeout=30,
-        )
-        if gemini_resp.status_code != 200:
-            return JSONResponse({"error": f"Gemini [{gemini_resp.status_code}]: {gemini_resp.text[:300]}"})
+        tools_called = []
+        all_tool_results = []
 
-        response_data = gemini_resp.json()
-        candidates = response_data.get("candidates", [])
-        if not candidates:
-            return JSONResponse({"error": "No response from Gemini"})
+        # ── MULTI-TURN ORCHESTRATION LOOP ──
+        for turn in range(MAX_ORCHESTRATION_TURNS):
+            token = get_adc_token()
+            headers_ai = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        content = candidates[0].get("content", {})
-        parts = content.get("parts", [])
-        
-        # Check if Gemini made a tool call
-        tool_called = None
-        tool_args = None
-        tool_result_data = None
-        summary = None
-        
-        for part in parts:
-            if "functionCall" in part:
-                # Gemini called a tool
-                tool_called = part["functionCall"]["name"]
-                tool_args = part["functionCall"].get("args", {})
-                
-                # Execute the tool
-                try:
-                    # Call the tool directly by bypassing the MCP wrapper
-                    # This avoids the text truncation bug in _tool_manager.call_tool()
-                    tool = app_mcp._tool_manager._tools.get(tool_called)
-                    if not tool:
-                        raise ValueError(f"Tool {tool_called} not found")
-                    
-                    # Normalize parameters before calling tool
-                    # Maps common parameter name variations
-                    normalized_args = normalize_tool_parameters(tool_called, tool_args)
-                    
-                    # Call the tool function directly with the arguments
-                    result_text = tool.fn(**normalized_args)
-                    
-                    # Ensure result_text is a string
-                    if not isinstance(result_text, str):
-                        result_text = str(result_text)
-                    
-                    # Try to parse as JSON, fall back to string
-                    try:
-                        tool_result_data = json.loads(result_text)
-                    except (json.JSONDecodeError, TypeError):
-                        # If it's just a single character, something went wrong
-                        if len(result_text) <= 2:
-                            tool_result_data = {"error": f"Tool returned truncated result: {result_text}"}
-                        else:
-                            tool_result_data = result_text
-                    
-                    # Generate summary with multi-turn conversation
-                    try:
-                        sum_resp = requests.post(
-                            gemini_url,
-                            headers={"Authorization": f"Bearer {get_adc_token()}", "Content-Type": "application/json"},
-                            json={
-                                "contents": [
-                                    {"role": "user", "parts": [{"text": user_msg}]},
-                                    {"role": "model", "parts": [{"text": f"I will call the {tool_called} tool with arguments {json.dumps(tool_args)}."}]},
-                                    {"role": "user", "parts": [{"text": f"Here are the results from {tool_called}:\n\n{result_text[:5000]}\n\nPlease analyze and summarize the key findings. Be specific and actionable."}]},
-                                ],
-                                "systemInstruction": {"parts": [{"text": (
-                                    "You are a security analyst summarizing tool results for a SOC operator. "
-                                    "Be concise, highlight the most important findings, and recommend next steps. "
-                                    "Do NOT ask for more information — you have everything you need in the tool output above."
-                                )}]},
-                            },
-                            timeout=30,
-                        )
-                        summary = sum_resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    except Exception as e:
-                        logger.error(f"Summary generation failed: {e}")
-                        summary = f"Tool {tool_called} executed successfully. (Summary generation failed: {e})"
-                    
-                    # Format tool_result for readability
-                    formatted_result = tool_result_data
-                    if isinstance(tool_result_data, dict):
-                        if "cases" in tool_result_data:
-                            # Format cases nicely
-                            cases = tool_result_data.get("cases", [])
-                            formatted_result = {
-                                "count": len(cases),
-                                "cases": [
-                                    {
-                                        "name": c.get("title") or c.get("displayName") or c.get("id"),
-                                        "priority": c.get("priority", "").replace("PRIORITY_", ""),
-                                        "status": c.get("status", ""),
-                                        "created": c.get("create_time", "")[:19],
-                                    }
-                                    for c in cases[:20]
-                                ]
-                            }
-                        elif "rules" in tool_result_data:
-                            # Format rules nicely
-                            rules = tool_result_data.get("rules", [])
-                            formatted_result = {
-                                "count": len(rules),
-                                "rules": [
-                                    {
-                                        "name": r.get("displayName") or r.get("name"),
-                                        "enabled": r.get("enabled", False),
-                                        "severity": r.get("severity", "UNKNOWN"),
-                                    }
-                                    for r in rules[:20]
-                                ]
-                            }
-                        elif "data_tables" in tool_result_data:
-                            # Format data tables nicely
-                            tables = tool_result_data.get("data_tables", [])
-                            formatted_result = {
-                                "count": len(tables),
-                                "tables": [
-                                    {
-                                        "name": t.get("displayName") or t.get("name"),
-                                        "rows": t.get("row_count", 0),
-                                        "schema": t.get("schema", {}).get("columns", [])[0:3] if t.get("schema") else [],
-                                    }
-                                    for t in tables[:20]
-                                ]
-                            }
-                    
-                    # Save turn to session history
-                    session_store.append_history(session_id, "user", user_msg)
-                    session_store.append_history(session_id, "model",
-                        f"[Called {tool_called}] {summary or ''}"
-                    )
+            gemini_resp = requests.post(
+                gemini_url,
+                headers=headers_ai,
+                json={
+                    "contents": contents,
+                    "tools": [{"functionDeclarations": tool_declarations}],
+                    "systemInstruction": system_instruction,
+                },
+                timeout=120,
+            )
+            if gemini_resp.status_code != 200:
+                return JSONResponse({"error": f"Gemini [{gemini_resp.status_code}]: {gemini_resp.text[:300]}"})
 
-                    resp = JSONResponse({
-                        "tool_called": tool_called,
-                        "tool_args": tool_args,
-                        "tool_result": formatted_result,
-                        "raw_result_preview": str(tool_result_data)[:300],
-                        "response": summary,
-                        "session_id": session_id,
-                    })
-                    resp.set_cookie("soc_session", session_id, max_age=86400, samesite="lax")
-                    return resp
-                except Exception as e:
-                    logger.error(f"Tool execution error: {e}")
-                    return JSONResponse({
-                        "tool_called": tool_called,
-                        "tool_args": tool_args,
-                        "error": f"Tool execution failed: {str(e)}",
-                        "response": f"Failed to execute tool {tool_called}: {str(e)}",
-                        "session_id": session_id,
-                    }, status_code=500)
-            
-            elif "text" in part:
-                # Gemini responded with text (no tool call) — save to history
-                text_response = part["text"]
+            response_data = gemini_resp.json()
+            candidates = response_data.get("candidates", [])
+            if not candidates:
+                return JSONResponse({"error": "No response from Gemini", "tools_called": tools_called})
+
+            content_resp = candidates[0].get("content", {})
+            parts = content_resp.get("parts", [])
+
+            # Check for function calls vs final text
+            has_function_call = any("functionCall" in p for p in parts)
+
+            if not has_function_call:
+                # Gemini produced a final text answer — done
+                final_text = " ".join(p["text"] for p in parts if "text" in p)
                 session_store.append_history(session_id, "user", user_msg)
-                session_store.append_history(session_id, "model", text_response)
-                resp = JSONResponse({"response": text_response, "session_id": session_id})
+                session_store.append_history(session_id, "model", final_text)
+                resp = JSONResponse({
+                    "response": final_text,
+                    "tools_called": tools_called,
+                    "tool_results": all_tool_results,
+                    "turns_used": turn + 1,
+                    "session_id": session_id,
+                })
                 resp.set_cookie("soc_session", session_id, max_age=86400, samesite="lax")
                 return resp
-        
-        # If we get here, no tool call and no text (shouldn't happen)
-        return JSONResponse({"error": "Unexpected response format from Gemini", "session_id": session_id})
+
+            # Process all function calls in this turn
+            contents.append({"role": "model", "parts": parts})
+
+            function_response_parts = []
+            for part in parts:
+                if "functionCall" not in part:
+                    continue
+                tool_name = part["functionCall"]["name"]
+                tool_args = part["functionCall"].get("args", {})
+                tools_called.append({"tool": tool_name, "args": tool_args, "turn": turn + 1})
+
+                # Execute the tool
+                try:
+                    tool_obj = app_mcp._tool_manager._tools.get(tool_name)
+                    if not tool_obj:
+                        result_text = json.dumps({"error": f"Tool '{tool_name}' not found"})
+                    else:
+                        normalized_args = normalize_tool_parameters(tool_name, tool_args)
+                        result_text = tool_obj.fn(**normalized_args)
+                        if not isinstance(result_text, str):
+                            result_text = str(result_text)
+                except Exception as e:
+                    result_text = json.dumps({"error": f"Tool execution failed: {str(e)}"})
+                    logger.error(f"Tool {tool_name} error: {e}")
+
+                # Truncate very large results to stay within context limits
+                if len(result_text) > 8000:
+                    result_text = result_text[:8000] + "... [truncated]"
+
+                all_tool_results.append({
+                    "tool": tool_name,
+                    "result_preview": result_text[:500],
+                    "turn": turn + 1,
+                })
+
+                function_response_parts.append({
+                    "functionResponse": {
+                        "name": tool_name,
+                        "response": {"content": result_text},
+                    }
+                })
+
+            # Feed tool results back to Gemini for next turn
+            contents.append({"role": "user", "parts": function_response_parts})
+            logger.info(f"Orchestration turn {turn + 1}: called {[t['tool'] for t in tools_called if t['turn'] == turn + 1]}")
+
+        # Exhausted all turns
+        session_store.append_history(session_id, "user", user_msg)
+        session_store.append_history(session_id, "model",
+            f"Investigation completed using {len(tools_called)} tool calls across {MAX_ORCHESTRATION_TURNS} turns."
+        )
+        resp = JSONResponse({
+            "response": f"Investigation used {len(tools_called)} tool calls across {MAX_ORCHESTRATION_TURNS} turns. "
+                         f"Tools used: {', '.join(set(t['tool'] for t in tools_called))}. "
+                         f"Review the tool_results for full findings.",
+            "tools_called": tools_called,
+            "tool_results": all_tool_results,
+            "turns_used": MAX_ORCHESTRATION_TURNS,
+            "session_id": session_id,
+        })
+        resp.set_cookie("soc_session", session_id, max_age=86400, samesite="lax")
+        return resp
 
     except Exception as e:
         logger.error(f"Chat error: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
-
 
 # ═══════════════════════════════════════════════════════════════
 # 📊 MTTx METRICS
