@@ -1,8 +1,26 @@
 # 🛡️ MCP Boss — Autonomous Security Operations Server
 
-**86 tools** spanning the complete security operations lifecycle — discovery, hunting, threat intelligence, detection engineering, case management, SOAR automation, containment, and autonomous investigation — deployed as a single serverless endpoint on Google Cloud Run.
+**89 tools** spanning the complete security operations lifecycle — discovery, hunting, threat intelligence, detection engineering, case management, SOAR automation, containment, and autonomous investigation — deployed as a single serverless endpoint on Google Cloud Run.
 
-**Live:** `https://mcp-boss-672020644906.us-central1.run.app`
+**Live Demo:** `https://mcp-boss-672020644906.us-central1.run.app`
+
+## One-Click Deploy
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/dnehoda-source/MCP-Boss&cloudshell_tutorial=setup.sh&cloudshell_open_in_editor=README.md)
+
+Or manually:
+```bash
+git clone https://github.com/dnehoda-source/MCP-Boss.git
+cd MCP-Boss
+chmod +x setup.sh && ./setup.sh
+```
+
+The setup wizard will:
+1. Enable all required GCP APIs
+2. Create a service account with the right IAM roles
+3. Build the container
+4. Deploy to Cloud Run
+5. Verify and print your endpoints
 
 ---
 
