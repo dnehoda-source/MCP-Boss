@@ -4235,29 +4235,17 @@ STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 # ═══════════════════════════════════════════════════════════════
 # 🔗 GEMINI CLI MCP SERVER (focused 20-tool subset)
-# Gemini API can't handle 86 tools — expose a focused subset
+# All tools exposed on all endpoints — no allowlist filtering.
+# Gemini 2.5 Flash handles large tool sets natively.
 # ═══════════════════════════════════════════════════════════════
-
-GEMINI_TOOL_ALLOWLIST = {
-    "get_last_cases", "list_cases", "get_last_detections", "get_last_logins",
-    "get_scc_findings", "top_vulnerability_findings", "get_finding_remediation",
-    "search_secops_udm", "search_security_events", "lookup_entity",
-    "enrich_indicator", "get_file_report", "get_domain_report", "get_ip_report",
-    "search_threat_actors", "get_mttx_metrics", "get_security_alerts", "query_ingestion_stats",
-    "get_iam_policy", "get_service_accounts", "check_iam_permissions",
-    "query_cloud_logging", "list_rules", "create_soar_case",
-    "add_case_comment", "close_case", "autonomous_investigate",
-    "create_detection_rule_for_scc_finding",
-}
 
 app_mcp_gemini = FastMCP("google-soc", json_response=True)
 
-# Re-register only the allowlisted tools on the Gemini-facing MCP server
+# Mirror ALL tools to the Gemini-facing MCP server — no filtering
 for _tool in app_mcp._tool_manager.list_tools():
-    if _tool.name in GEMINI_TOOL_ALLOWLIST:
-        app_mcp_gemini._tool_manager._tools[_tool.name] = _tool
+    app_mcp_gemini._tool_manager._tools[_tool.name] = _tool
 
-logger.info(f"Gemini MCP server: {len(GEMINI_TOOL_ALLOWLIST)} tools exposed")
+logger.info(f"Gemini MCP server: {len(app_mcp_gemini._tool_manager._tools)} tools exposed (all)")
 
 # Streamable HTTP for Gemini CLI using StreamableHTTPSessionManager with proper lifespan
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
