@@ -2088,7 +2088,7 @@ def list_data_access_scopes(project_id: str = "") -> str:
 
 
 @app_mcp.tool()
-def list_parsers(project_id: str = "") -> str:
+def list_parsers(project_id: str = "", max_results: int = 50) -> str:
     """List all configured parsers and log types in SecOps. Shows which log sources have active parsers."""
     try:
         client = SecOpsClient()
@@ -2099,7 +2099,14 @@ def list_parsers(project_id: str = "") -> str:
         )
         result = chronicle.list_parsers()
         parsers = result if isinstance(result, list) else result.get('parsers', result)
-        return json.dumps({"parsers": parsers, "count": len(parsers) if isinstance(parsers, list) else 0})
+        # Summarize to avoid massive output
+        summary = []
+        for p in (parsers[:max_results] if isinstance(parsers, list) else []):
+            name = p.get('name', '')
+            log_type = name.split('/logTypes/')[-1].split('/')[0] if '/logTypes/' in name else name
+            creator = p.get('creator', {}).get('source', 'UNKNOWN')
+            summary.append({"log_type": log_type, "creator": creator})
+        return json.dumps({"parsers": summary, "count": len(parsers) if isinstance(parsers, list) else 0, "showing": len(summary)})
     except Exception as e:
         return json.dumps({"error": str(e)})
 
