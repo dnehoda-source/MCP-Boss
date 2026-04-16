@@ -10,7 +10,10 @@ MCP Boss gives any AI model (Gemini, Claude, GPT) full access to SecOps, SCC, GT
 
 ### One-line install:
 ```bash
-curl -sL https://raw.githubusercontent.com/dnehoda-source/MCP-Boss/main/setup.sh | bash
+curl -sL https://raw.githubusercontent.com/dnehoda-source/MCP-Boss/main/setup.sh | bash -s -- \
+  --project your-project-id \
+  --customer your-secops-customer-id \
+  --gti-key your-vt-api-key
 ```
 
 ### Or open in Cloud Shell:
