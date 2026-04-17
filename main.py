@@ -443,11 +443,11 @@ def translate_nl_to_udm_query(natural_language: str) -> str:
         return ""
 
 
-def parse_time_range(hours_back: int = 24, start_time: str = "", end_time: str = "") -> tuple:
+def parse_time_range(hours_back: float = 24.0, start_time: str = "", end_time: str = "", minutes_back: float = 0.0) -> tuple:
     """
     Parse time range parameters into ISO 8601 timestamps.
     Returns (start_iso, end_iso).
-    Priority: explicit start_time/end_time > hours_back
+    Priority: explicit start_time/end_time > minutes_back > hours_back
     """
     try:
         end = datetime.now(timezone.utc)
@@ -462,8 +462,11 @@ def parse_time_range(hours_back: int = 24, start_time: str = "", end_time: str =
                 return (start.isoformat(), end.isoformat())
             except:
                 pass
-        hours_back = min(max(1, hours_back), 8760)
-        start = end - timedelta(hours=hours_back)
+        if minutes_back > 0:
+            start = end - timedelta(minutes=minutes_back)
+        else:
+            hours_back = min(max(0.01, hours_back), 8760)
+            start = end - timedelta(hours=hours_back)
         return (start.isoformat(), end.isoformat())
     except Exception as e:
         logger.warning(f"Time range parse error: {e}, using default")
@@ -547,7 +550,7 @@ def query_cloud_logging(project_id: str = "", filter_string: str = "", query: st
             final_filter = 'severity >= "DEFAULT"'
         
         # Parse time range
-        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time, locals().get('minutes_back', 0.0))
         
         # Add time range to filter
         time_filter = f'timestamp >= "{start_iso}" AND timestamp <= "{end_iso}"'
@@ -563,7 +566,7 @@ def query_cloud_logging(project_id: str = "", filter_string: str = "", query: st
 
 
 @app_mcp.tool()
-def search_secops_udm(query: str = "", udm_query: str = "", hours_back: int = 24, max_events: int = 100, start_time: str = "", end_time: str = "", time_range: str = "", limit: int = 0, count: int = 0) -> str:
+def search_secops_udm(query: str = "", udm_query: str = "", hours_back: float = 24.0, max_events: int = 100, start_time: str = "", end_time: str = "", time_range: str = "", limit: int = 0, count: int = 0, minutes_back: float = 0.0) -> str:
     """[SECOPS CHRONICLE] Direct UDM queries. Advanced threat hunting with Chronicle metadata: event_type, severity, action, source IP, target user, etc."""
     try:
         final_query = query or udm_query
@@ -577,7 +580,7 @@ def search_secops_udm(query: str = "", udm_query: str = "", hours_back: int = 24
         max_events = min(max(1, max_events), 10000)
         
         # Parse time range
-        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time, minutes_back)
         start_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
         end_dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
         
@@ -605,11 +608,11 @@ def search_secops_udm(query: str = "", udm_query: str = "", hours_back: int = 24
 
 
 @app_mcp.tool()
-def list_secops_detections(hours_back: int = 24, max_results: int = 50, start_time: str = "", end_time: str = "") -> str:
+def list_secops_detections(hours_back: float = 24.0, max_results: int = 50, start_time: str = "", end_time: str = "", minutes_back: float = 0.0) -> str:
     """List recent YARA-L detection alerts with rule names, severity, and outcomes with time range filtering."""
     try:
         max_results = min(max(1, max_results), 1000)
-        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time)
+        start_iso, end_iso = parse_time_range(hours_back, start_time, end_time, minutes_back)
         start_dt = datetime.fromisoformat(start_iso.replace('Z', '+00:00'))
         end_dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
         
@@ -1322,7 +1325,7 @@ def update_soar_case(
 
 
 @app_mcp.tool()
-def search_security_events(text: str = "", query: str = "", hours_back: int = 24, time_range: str = "", timerange: str = "", max_events: int = 100) -> str:
+def search_security_events(text: str = "", query: str = "", hours_back: float = 24.0, time_range: str = "", timerange: str = "", max_events: int = 100, minutes_back: float = 0.0) -> str:
     """[SECOPS CHRONICLE] Search UDM for logins, malware, threats. Translates natural language to UDM: metadata.event_type=USER_LOGIN, security_result.action=ALLOW, etc."""
     try:
         search_text = text or query
@@ -1639,7 +1642,7 @@ def search_threat_actors(query: str = "", actor_query: str = "", threat_actor_qu
         resp2 = requests.get(
             "https://www.virustotal.com/api/v3/intelligence/search",
             headers={"x-apikey": GTI_API_KEY},
-            params={"query": f'type:threat-actor name:"{final_query}"', "limit": limit},
+            params={"query": f'type:threat-actor "{final_query}"', "limit": limit},
             timeout=30,
         )
         if resp2.status_code == 200:
@@ -4734,7 +4737,7 @@ def get_last_cases(count: int = 5, n: int = 0, N: int = 0, num_cases: int = 0, l
         return json.dumps({"error": str(e)})
 
 @app_mcp.tool()
-def get_last_detections(count: int = 5, n: int = 0, N: int = 0, num_detections: int = 0, limit: int = 0, number_of_detections: int = 0) -> str:
+def get_last_detections(count: int = 5, n: int = 0, N: int = 0, num_detections: int = 0, limit: int = 0, number_of_detections: int = 0, minutes_back: float = 0.0) -> str:
     """Get the last N detection alerts. Use for: 'last 5 detections', 'last 10 detections'."""
     for val in [n, N, num_detections, limit, number_of_detections]:
         if val > 0:
@@ -4750,6 +4753,8 @@ def get_last_detections(count: int = 5, n: int = 0, N: int = 0, num_detections: 
         # list_detections requires rule_id; use search_rule_alerts instead for "all" detections
         end_dt = datetime.now(timezone.utc)
         start_dt = end_dt - timedelta(hours=24)
+        if minutes_back > 0:
+            start_dt = end_dt - timedelta(minutes=minutes_back)
         result = chronicle.search_rule_alerts(
             start_time=start_dt,
             end_time=end_dt,

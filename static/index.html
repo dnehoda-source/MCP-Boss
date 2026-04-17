@@ -80,7 +80,34 @@ fetch('/health').then(r=>r.json()).then(d=>{
   document.getElementById('status-badge').style.borderColor = '#f44';
 });
 
-input.addEventListener('keydown', e => { if (e.key === 'Enter' && !sendBtn.disabled) sendMessage(); });
+let cmdHistory = [];
+let historyIdx = -1;
+
+input.addEventListener('keydown', e => { 
+  if (e.key === 'Enter' && !sendBtn.disabled) {
+    if (input.value.trim()) {
+      cmdHistory.unshift(input.value.trim());
+      if (cmdHistory.length > 50) cmdHistory.pop();
+    }
+    historyIdx = -1;
+    sendMessage(); 
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (historyIdx < cmdHistory.length - 1) {
+      historyIdx++;
+      input.value = cmdHistory[historyIdx];
+    }
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (historyIdx > 0) {
+      historyIdx--;
+      input.value = cmdHistory[historyIdx];
+    } else if (historyIdx === 0) {
+      historyIdx = -1;
+      input.value = '';
+    }
+  }
+});
 
 function addMessage(text, cls) {
   const div = document.createElement('div');
