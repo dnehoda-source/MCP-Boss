@@ -1797,7 +1797,7 @@ def list_cases() -> str:
             project_id=SECOPS_PROJECT_ID,
             region=SECOPS_REGION
         )
-        result = chronicle.list_cases(page_size=100)
+        result = chronicle.list_cases(page_size=100, order_by="createTime desc")
         cases = result.get('cases', []) if isinstance(result, dict) else (result if isinstance(result, list) else [])
         formatted = []
         for c in cases:
@@ -4738,7 +4738,7 @@ def get_last_cases(count: int = 5, n: int = 0, N: int = 0, num_cases: int = 0, l
             project_id=SECOPS_PROJECT_ID,
             region=SECOPS_REGION
         )
-        result = chronicle.list_cases(page_size=count)
+        result = chronicle.list_cases(page_size=count, order_by="createTime desc")
         # Handle dict response with 'cases' key
         cases = result.get('cases', []) if isinstance(result, dict) else result
         return json.dumps({"count": len(cases), "cases": cases})
