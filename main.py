@@ -4726,7 +4726,12 @@ register_http_routes(_starlette_app, gate)
 
 # Auth sits at the outermost layer so /mcp, /sse, /api/*, everything is gated.
 # When OAUTH_CLIENT_ID is unset, AuthMiddleware is a no-op (local dev path).
-app = AuthMiddleware(MCPMiddleware(_starlette_app))
+# Expose as an async function so uvicorn's ASGI 2/3 auto-detection cannot
+# misidentify the middleware instance as a legacy ASGI 2 callable.
+_auth_mw = AuthMiddleware(MCPMiddleware(_starlette_app))
+
+async def app(scope, receive, send):
+    await _auth_mw(scope, receive, send)
 
 if __name__ == "__main__":
     import uvicorn
