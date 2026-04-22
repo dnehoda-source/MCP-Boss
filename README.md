@@ -1,6 +1,6 @@
 # 🛡️ MCP Boss — Autonomous Security Operations Server
 
-**89 tools.** One endpoint. Talk to your entire Google security stack in plain English.
+**91 tools.** One endpoint. Talk to your entire Google security stack in plain English.
 
 MCP Boss gives any AI model (Gemini, Claude, GPT) full access to SecOps, SCC, GTI, Cloud Logging, SOAR, BigQuery, IAM, and cross-platform containment — through the [Model Context Protocol](https://modelcontextprotocol.io).
 
@@ -47,6 +47,21 @@ You ask a question → Gemini picks the right tools → executes them → chains
 5. Produces an executive summary with recommended actions
 
 All automatic, up to 20 chained tool calls in a single request.
+
+---
+
+## Benchmark
+
+First benchmark run on a live Cloud Run deployment (2026-04-22, gemini-2.5-flash, 6 scenarios):
+
+| Metric | Value |
+|---|---|
+| correct_verdict_pct | 83.3% (5/6 scenarios) |
+| correct_containment_pct | 13.9% |
+| destructive_fp_rate_pct | **0.0%** |
+| median_alert_to_containment_s | 60.87 |
+
+Full scorecard, scenarios, and raw tool traces live under `eval_harness/` (`scorecard-2026-04-22.md`, `results.json`). Rerun any time with `./eval_harness/run.sh`. Nobody else in this category publishes these numbers credibly; that is the point.
 
 ---
 
@@ -228,8 +243,90 @@ The server validates this automatically when `MCP_BOSS_API_KEY` is set.
 | **Secret Manager** | Store API keys (GTI, Okta, AWS, etc.) in Secret Manager, not env vars |
 | **Audit logging** | Cloud Run request logs are automatic; enable Data Access audit logs |
 | **VPC SC** | Place the project in a VPC Service Controls perimeter |
-| **Containment approval** | Add approval workflows before destructive containment actions |
+| **Containment approval** | Built in: see "Authentication & Approvals" below |
 | **Network** | Use `--ingress=internal` + Cloud VPN/Interconnect for production |
+
+---
+
+## Authentication & Approvals
+
+Application-level controls that sit on top of Cloud Run IAM. All of them are off by default; opt in with env vars.
+
+### Authentication (Google ID tokens)
+
+Set `OAUTH_CLIENT_ID` and the server rejects any request without a valid Google OIDC ID token whose `aud` matches.
+
+| Variable | Purpose |
+|---|---|
+| `OAUTH_CLIENT_ID` | Primary audience. Usually your browser-flow OAuth 2.0 client ID. |
+| `OAUTH_ADDITIONAL_AUDIENCES` | Comma-separated extra accepted audiences. Add the service URL or `32555940559.apps.googleusercontent.com` (gcloud default client) for server-to-server CI calls. |
+| `ALLOWED_EMAILS` | Optional comma-separated allowlist. If set, an authenticated email not on the list is rejected. |
+| `AUTH_EXEMPT_PATHS` | Comma-separated path prefixes that bypass auth (default `/health,/static`). |
+
+When `OAUTH_CLIENT_ID` is unset the middleware is a no-op: auth is disabled, principal is `local`, every role check passes. Do not ship this configuration outside local dev. The server refuses to start if `LOCAL_DEV_ALL_ROLES=1` is set without either `OAUTH_CLIENT_ID` or `MCP_BOSS_ENV=dev`.
+
+### Role mapping and approver groups
+
+`policy_and_approvals/policies.yaml` maps each destructive tool (host isolation, key revocation, email purge, etc.) to one or more approver role names. To authorise a caller, map their email to a role set.
+
+| Variable | Format |
+|---|---|
+| `ROLE_MAP_JSON` | Inline JSON: `{"alice@co.com":["security-oncall"], "@co.com":["soc-manager"]}` |
+| `ROLE_MAP_PATH` | Path to a YAML file: `roles: {alice@co.com: [security-oncall]}` |
+
+Approver role names recognised by the default `policies.yaml`: `security-oncall`, `soc-manager`, `identity-team`, `cloud-platform`, `detection-engineering`, `legal`, `security-leadership`.
+
+### Approval workflow
+
+1. Orchestrator wants to invoke a gated tool (e.g. `isolate_crowdstrike_host`).
+2. Policy gate checks `policies.yaml`. If `require_approval`, it freezes the tool call as an `ApprovalRequest`.
+3. The approval is broadcast via any configured channel: `/api/approvals` (web UI), Google Chat card (`GOOGLE_CHAT_WEBHOOK_URL`), generic webhook (`APPROVAL_WEBHOOK_URL`).
+4. An approver hits `POST /api/approvals/{id}/decide` with `approve` / `deny`. The server 403s unless the authenticated caller's roles intersect the rule's `approver_groups`. `decided_by` is rebound to the authenticated email so the audit trail cannot be spoofed.
+5. On approve, the tool executes. Every state transition lands in the hash-chained audit log.
+
+Verify the chain any time with `GET /api/audit/verify`:
+
+```json
+{"chain_intact": true, "broken_at_seq": null, "audit_path": "/var/log/mcp-boss/audit.jsonl"}
+```
+
+### Tenant isolation
+
+`SessionMemory` is keyed by (authenticated principal, session_id). Two users on the same Cloud Run instance cannot read each other's investigation history even if they guess session IDs. MCP transport session tools (stdio / SSE) use a distinct `mcp-transport` namespace; gate that transport at the infra layer (Cloud Run IAM invoker on `/mcp` and `/sse`).
+
+### Output redaction (DLP)
+
+Set `ENABLE_OUTPUT_REDACTION=1` and every tool result is scanned before it flows back to the LLM or the API response. Luhn-checked CC numbers, SSN-looking strings (with IP/date guards), PEM private keys, AWS access keys, JWTs, and labelled API keys (GTI, Okta, CrowdStrike, Azure AD, O365, `api_key`, `bearer_token`, `client_secret`, `access_token`) are replaced with `[REDACTED:<type>]`. The audit log records the un-redacted content; only what crosses the tool-to-LLM boundary is sanitised.
+
+---
+
+## Operations
+
+### Daily use
+
+- **Web UI** — browse to the Cloud Run URL, sign in with Google. Paste an alert or ask a question.
+- **Gemini CLI** — `gemini --tool-endpoint https://YOUR-URL/mcp --headers "Authorization=Bearer $(gcloud auth print-identity-token)"`.
+- **Claude Desktop** — add the `/sse` URL to `claude_desktop_config.json` (see the Connect section).
+
+Every request produces a chat transcript (in the web UI), a full tool trace (in Cloud Logging), and an audit record for any gated tool call.
+
+### Benchmark / regression
+
+```bash
+export MCP_URL=https://YOUR-SERVICE-URL
+export MCP_ID_TOKEN=$(gcloud auth print-identity-token)
+./eval_harness/run.sh
+```
+
+Produces `scorecard.md` (headline numbers) and `results.json` (raw tool traces per scenario). Wire this into CI and fail the build if `destructive_fp_rate_pct > 0` or verdict accuracy drops.
+
+### Audit log export
+
+Records are JSONL at `$MCP_BOSS_AUDIT_PATH` (default `/var/log/mcp-boss/audit.jsonl`, falls back to `~/.mcp-boss/audit.jsonl`) and mirrored to Cloud Logging under log name `mcp-boss-audit`. Point a BigQuery sink at the Cloud Logging stream for long-term retention and SIEM ingest.
+
+### Multi-tenant install
+
+`deploy/multi_tenant/install.sh` runs `terraform apply` with Artifact Registry, Secret Manager stubs, Cloud Run v2, and IAM bindings in one command. Pass `--oauth-client-id`, `--allowed-emails`, `--role-map-json`, and `--enable-redaction` to set the full auth config at deploy time.
 
 ---
 
@@ -373,6 +470,30 @@ gemini --tool-endpoint https://YOUR-SERVICE-URL/mcp
 |----------|-------------|
 | `GTI_API_KEY` | VirusTotal / Google Threat Intelligence API key |
 
+### Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `OAUTH_CLIENT_ID` | Google OAuth 2.0 client ID. When set, every request must present a valid ID token whose `aud` matches. Unset = auth disabled (dev only). |
+| `OAUTH_ADDITIONAL_AUDIENCES` | Comma-separated extra accepted audiences. Add the service URL or `32555940559.apps.googleusercontent.com` for server-to-server / CI. |
+| `ALLOWED_EMAILS` | Comma-separated allowlist of authenticated emails. If set, other emails are rejected. |
+| `ROLE_MAP_JSON` | Inline JSON mapping email or `@domain` to approver role lists. |
+| `ROLE_MAP_PATH` | YAML file with `roles:` block. Same shape as `ROLE_MAP_JSON`. |
+| `AUTH_EXEMPT_PATHS` | Path prefixes that bypass auth (default `/health,/static`). |
+| `LOCAL_DEV_ALL_ROLES` | `1` grants every caller every approver role. Requires `MCP_BOSS_ENV=dev`; otherwise server refuses to start. |
+| `MCP_BOSS_ENV` | Operator declaration. Set to `dev` on a dev machine to allow `LOCAL_DEV_ALL_ROLES=1`. |
+
+### Operations
+
+| Variable | Description |
+|----------|-------------|
+| `ENABLE_OUTPUT_REDACTION` | `1` enables DLP pass on tool results before they flow to the LLM. Off by default. |
+| `MCP_BOSS_AUDIT_PATH` | JSONL audit log path (default `/var/log/mcp-boss/audit.jsonl`, falls back to `~/.mcp-boss/audit.jsonl`). |
+| `GOOGLE_CHAT_WEBHOOK_URL` | Google Chat webhook for approval cards. |
+| `APPROVAL_WEBHOOK_URL` | Generic webhook for approval notifications. |
+| `PUBLIC_BASE_URL` | Public URL used when building links in approval notifications. |
+| `GEMINI_MODEL` | Gemini model for orchestration (default `gemini-2.5-flash`). |
+
 ### Optional — Third-Party Containment
 
 | Variable | Description |
@@ -383,9 +504,11 @@ gemini --tool-endpoint https://YOUR-SERVICE-URL/mcp
 | `SOAR_AWS_KEY`, `SOAR_AWS_SECRET` | AWS — IAM key revocation |
 | `CROWDSTRIKE_CLIENT_ID`, `CROWDSTRIKE_CLIENT_SECRET` | CrowdStrike — host isolation |
 
+Any sensitive env var accepts `sm://PROJECT/SECRET_NAME` in place of a plaintext value. The `secrets_resolver` module transparently fetches the latest version from Google Secret Manager at startup.
+
 ---
 
-## All 89 Tools
+## All 91 Tools
 
 ### 🔍 Discovery & Hunting (12 tools)
 
@@ -536,12 +659,16 @@ gemini --tool-endpoint https://YOUR-SERVICE-URL/mcp
 | Endpoint | Transport | Client |
 |----------|-----------|--------|
 | `GET /` | HTTP | Web UI (built-in chat) |
-| `GET /health` | HTTP | Health check |
+| `GET /health` | HTTP | Health check (exempt from auth) |
 | `GET /api/tools` | HTTP | Tool listing |
 | `POST /api/chat` | HTTP | Multi-turn orchestration (Web UI) |
 | `GET /sse` | SSE | Claude Desktop / MCP clients |
 | `POST /messages/` | HTTP | SSE message handler |
 | `POST /mcp` | Streamable HTTP | Gemini CLI |
+| `GET /api/approvals` | HTTP | List approval requests (filter with `?state=pending`) |
+| `GET /api/approvals/{id}` | HTTP | Fetch a specific approval |
+| `POST /api/approvals/{id}/decide` | HTTP | Approve or deny (caller roles must intersect rule's approver_groups) |
+| `GET /api/audit/verify` | HTTP | Verify the hash-chained audit log is intact |
 
 ---
 
