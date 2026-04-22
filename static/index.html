@@ -80,14 +80,16 @@ fetch('/health').then(r=>r.json()).then(d=>{
   document.getElementById('status-badge').style.borderColor = '#f44';
 });
 
-let cmdHistory = [];
+let cmdHistory = JSON.parse(localStorage.getItem('mcp_cmd_history') || '[]');
 let historyIdx = -1;
 
 input.addEventListener('keydown', e => { 
   if (e.key === 'Enter' && !sendBtn.disabled) {
     if (input.value.trim()) {
+      cmdHistory = cmdHistory.filter(c => c !== input.value.trim());
       cmdHistory.unshift(input.value.trim());
       if (cmdHistory.length > 50) cmdHistory.pop();
+      localStorage.setItem('mcp_cmd_history', JSON.stringify(cmdHistory));
     }
     historyIdx = -1;
     sendMessage(); 

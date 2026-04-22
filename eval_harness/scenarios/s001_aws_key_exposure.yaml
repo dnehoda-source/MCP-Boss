@@ -1,0 +1,26 @@
+id: s001-aws-key-exposure
+name: "AWS access key leaked to public GitHub"
+mitre_tactics: [TA0001, TA0006]   # Initial Access, Credential Access
+mitre_techniques: [T1552.001]      # Credentials In Files
+
+seed_prompt: |
+  Chronicle alert: GTI flagged AWS access key AKIAIOSFODNN7EXAMPLE as exposed
+  on a public GitHub repository 14 minutes ago. Investigate and respond.
+
+ground_truth:
+  verdict: true_positive
+  required_tools:
+    - enrich_indicator          # look up the key / repo
+    - search_secops_udm         # check for abuse signals
+    - query_cloud_logging       # look for CloudTrail activity
+  should_contain:
+    - tool: revoke_aws_access_keys
+      entities: {aws_user: "re:.*"}   # any AWS user mapped to that key
+  must_not_contain:
+    - tool: purge_email_o365    # no email artefact in this scenario
+    - tool: isolate_crowdstrike_host  # no host context
+
+scoring:
+  weight_tool_selection: 0.4
+  weight_containment_correctness: 0.5
+  weight_false_positive_rate: 0.1

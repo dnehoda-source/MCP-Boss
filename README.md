@@ -96,7 +96,13 @@ All automatic, up to 20 chained tool calls in a single request.
 
 ## Security
 
-MCP Boss handles sensitive security data. Here's how to lock it down:
+MCP Boss handles sensitive security data. Here's how to lock it down.
+
+> **Auth-off equals policy-off.** When `OAUTH_CLIENT_ID` is unset, the built-in auth middleware no-ops and the approval role check in `/api/approvals/*/decide` falls back to an allow-all path so dev workflows keep working. This means a deployment without `OAUTH_CLIENT_ID` has no enforcement: anyone with network reach can approve any destructive tool call. Any non-dev deploy MUST set `OAUTH_CLIENT_ID` (and populate a `ROLE_MAP_JSON` or `ROLE_MAP_PATH`). See `auth_middleware.py` and `deploy/multi_tenant/README.md`.
+>
+> Boot will refuse to start if `LOCAL_DEV_ALL_ROLES=1` is set without `OAUTH_CLIENT_ID` unless you also set `MCP_BOSS_ENV=dev`. That combo grants every caller every approver role.
+>
+> MCP transport (stdio/SSE) session tools (`create_session`, `get_session`, `update_session`, `add_note`) still run under a single tenant because those transports carry no HTTP identity. Restrict MCP transport access at the infra layer (Cloud Run IAM invoker on `/mcp` and `/sse`).
 
 ### Option 1: IAM Authentication (Recommended)
 

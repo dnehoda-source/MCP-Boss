@@ -167,18 +167,40 @@ from mcp.server.fastmcp import FastMCP
 from datetime import datetime, timedelta, timezone
 import uuid
 
+# Policy / approvals / audit subsystem
+from policy_and_approvals import build_default_gate, register_http_routes
+from policy_and_approvals import tool_previews as _tp
+
+# Auth middleware (Google OIDC ID-token verification + role mapping)
+from auth_middleware import AuthMiddleware, principal_from_request, LOCAL_PRINCIPAL
+
 # ═══════════════════════════════════════════════════════════════
 # SESSION MEMORY (In-Memory Store)
 # ═══════════════════════════════════════════════════════════════
 
 class SessionMemory:
-    """Store context/state and conversation history for a session."""
+    """Tenant-isolated store for per-principal session state and chat history.
+
+    Every operation is keyed by (principal, session_id). Two callers hitting
+    the same Cloud Run instance cannot read each other's sessions even if they
+    guess each other's session IDs. When auth is disabled the middleware sets
+    principal="local" so local development still works with a single tenant.
+    """
     def __init__(self):
-        self.sessions = {}
-    
-    def create_session(self):
-        session_id = str(uuid.uuid4())
-        self.sessions[session_id] = {
+        # { principal: { session_id: {...session_state...} } }
+        self.sessions: dict = {}
+
+    def _ns(self, principal: str) -> dict:
+        if not principal:
+            principal = "local"
+        ns = self.sessions.get(principal)
+        if ns is None:
+            ns = {}
+            self.sessions[principal] = ns
+        return ns
+
+    def _blank(self) -> dict:
+        return {
             'created': datetime.now(timezone.utc),
             'last_case_id': None,
             'last_alert_id': None,
@@ -187,54 +209,52 @@ class SessionMemory:
             'last_domain': None,
             'investigation_notes': [],
             'context': {},
-            'chat_history': [],  # List of {role, parts} for multi-turn
+            'chat_history': [],
         }
+
+    def create_session(self, principal: str = "local"):
+        session_id = str(uuid.uuid4())
+        self._ns(principal)[session_id] = self._blank()
         return session_id
-    
-    def get_session(self, session_id):
-        return self.sessions.get(session_id)
-    
-    def get_or_create(self, session_id: str) -> dict:
-        """Get existing session or create new one with given ID."""
-        if session_id not in self.sessions:
-            self.sessions[session_id] = {
-                'created': datetime.now(timezone.utc),
-                'last_case_id': None,
-                'last_alert_id': None,
-                'last_ip': None,
-                'last_user': None,
-                'last_domain': None,
-                'investigation_notes': [],
-                'context': {},
-                'chat_history': [],
-            }
-        return self.sessions[session_id]
-    
-    def append_history(self, session_id: str, role: str, text: str):
+
+    def get_session(self, session_id, principal: str = "local"):
+        return self._ns(principal).get(session_id)
+
+    def get_or_create(self, session_id: str, principal: str = "local") -> dict:
+        """Get existing session (scoped to principal) or create a new one."""
+        ns = self._ns(principal)
+        if session_id not in ns:
+            ns[session_id] = self._blank()
+        return ns[session_id]
+
+    def append_history(self, session_id: str, role: str, text: str, principal: str = "local"):
         """Append a turn to chat history (role: 'user' or 'model')."""
-        session = self.get_or_create(session_id)
+        session = self.get_or_create(session_id, principal)
         session['chat_history'].append({'role': role, 'parts': [{'text': text}]})
         # Keep last 20 turns to avoid token bloat
         if len(session['chat_history']) > 20:
             session['chat_history'] = session['chat_history'][-20:]
 
-    def get_history(self, session_id: str) -> list:
-        """Get conversation history for a session."""
-        session = self.sessions.get(session_id)
+    def get_history(self, session_id: str, principal: str = "local") -> list:
+        """Get conversation history for a session owned by `principal`."""
+        session = self._ns(principal).get(session_id)
         return session['chat_history'] if session else []
 
-    def clear_history(self, session_id: str):
-        """Clear conversation history for a session."""
-        if session_id in self.sessions:
-            self.sessions[session_id]['chat_history'] = []
+    def clear_history(self, session_id: str, principal: str = "local"):
+        """Clear conversation history for a principal-owned session."""
+        ns = self._ns(principal)
+        if session_id in ns:
+            ns[session_id]['chat_history'] = []
 
-    def update_session(self, session_id, key, value):
-        if session_id in self.sessions:
-            self.sessions[session_id][key] = value
-    
-    def add_note(self, session_id, note):
-        if session_id in self.sessions:
-            self.sessions[session_id]['investigation_notes'].append({
+    def update_session(self, session_id, key, value, principal: str = "local"):
+        ns = self._ns(principal)
+        if session_id in ns:
+            ns[session_id][key] = value
+
+    def add_note(self, session_id, note, principal: str = "local"):
+        ns = self._ns(principal)
+        if session_id in ns:
+            ns[session_id]['investigation_notes'].append({
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'note': note
             })
@@ -245,26 +265,33 @@ session_store = SessionMemory()
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
+# Secret resolver — transparently fetches sm:// references from Google Secret Manager.
+from secrets_resolver import resolve as _secret
+
+# Non-sensitive config (IDs, domains, URLs) — plain env.
 SECOPS_PROJECT_ID = os.getenv("SECOPS_PROJECT_ID", "YOUR_PROJECT_ID")
 SECOPS_CUSTOMER_ID = os.getenv("SECOPS_CUSTOMER_ID", "YOUR_CUSTOMER_ID")
 SECOPS_REGION = os.getenv("SECOPS_REGION", "us")
-GTI_API_KEY = os.getenv("GTI_API_KEY", "")
-
-# Third-party integration keys (stored in Secret Manager)
+SOAR_BASE_URL = os.getenv("SOAR_BASE_URL", "")
 O365_CLIENT_ID = os.getenv("O365_CLIENT_ID", "")
-O365_CLIENT_SECRET = os.getenv("O365_CLIENT_SECRET", "")
 O365_TENANT_ID = os.getenv("O365_TENANT_ID", "")
 OKTA_DOMAIN = os.getenv("OKTA_DOMAIN", "")
-OKTA_API_TOKEN = os.getenv("OKTA_API_TOKEN", "")
 AZURE_AD_TENANT_ID = os.getenv("AZURE_AD_TENANT_ID", "")
 AZURE_AD_CLIENT_ID = os.getenv("AZURE_AD_CLIENT_ID", "")
-AZURE_AD_CLIENT_SECRET = os.getenv("AZURE_AD_CLIENT_SECRET", "")
-AWS_ACCESS_KEY_ID = os.getenv("SOAR_AWS_KEY", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("SOAR_AWS_SECRET", "")
 CS_CLIENT_ID = os.getenv("CROWDSTRIKE_CLIENT_ID", "")
-CS_CLIENT_SECRET = os.getenv("CROWDSTRIKE_CLIENT_SECRET", "")
 CS_BASE_URL = os.getenv("CROWDSTRIKE_BASE_URL", "https://api.crowdstrike.com")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Sensitive config — resolved through Secret Manager when the env value is an
+# sm:// reference. Plaintext values still work for local dev.
+GTI_API_KEY = _secret("GTI_API_KEY")
+SOAR_API_KEY = _secret("SOAR_API_KEY")
+O365_CLIENT_SECRET = _secret("O365_CLIENT_SECRET")
+OKTA_API_TOKEN = _secret("OKTA_API_TOKEN")
+AZURE_AD_CLIENT_SECRET = _secret("AZURE_AD_CLIENT_SECRET")
+AWS_ACCESS_KEY_ID = _secret("SOAR_AWS_KEY")
+AWS_SECRET_ACCESS_KEY = _secret("SOAR_AWS_SECRET")
+CS_CLIENT_SECRET = _secret("CROWDSTRIKE_CLIENT_SECRET")
 
 SECOPS_BASE_URL = (
     f"https://{SECOPS_REGION}-chronicle.googleapis.com/v1alpha"
@@ -288,17 +315,32 @@ logger = logging.getLogger("google-native-mcp")
 
 app_mcp = FastMCP("google-native-mcp", json_response=True)
 
+# Policy gate — evaluates every destructive tool call against policies.yaml,
+# routes to the approval broker when human sign-off is required, and writes a
+# hash-chained audit record for every decision.
+gate = build_default_gate()
+logger.info(
+    f"Policy gate initialised: {len(gate.engine.rules)} rules loaded, "
+    f"audit at {gate.audit.path}"
+)
+
 # Session management endpoints
+# MCP transport (stdio/SSE) carries no HTTP identity, so these tools share a
+# single namespace "mcp-transport" that is distinct from authenticated HTTP
+# principals. Restrict MCP transport access at the infra layer (Cloud Run IAM
+# invoker on /mcp and /sse).
+MCP_TRANSPORT_PRINCIPAL = "mcp-transport"
+
 @app_mcp.tool()
 def create_session() -> str:
     """Create a new session for maintaining context across multiple queries."""
-    session_id = session_store.create_session()
+    session_id = session_store.create_session(principal=MCP_TRANSPORT_PRINCIPAL)
     return json.dumps({"session_id": session_id, "status": "created"})
 
 @app_mcp.tool()
 def get_session(session_id: str) -> str:
     """Get current session state and investigation notes."""
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(session_id, principal=MCP_TRANSPORT_PRINCIPAL)
     if not session:
         return json.dumps({"error": "Session not found"})
     return json.dumps(session, default=str)
@@ -306,31 +348,31 @@ def get_session(session_id: str) -> str:
 @app_mcp.tool()
 def set_session_context(session_id: str, case_id: str = "", alert_id: str = "", ip: str = "", user: str = "", domain: str = "") -> str:
     """Update session context with investigation targets."""
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(session_id, principal=MCP_TRANSPORT_PRINCIPAL)
     if not session:
         return json.dumps({"error": "Session not found"})
-    
+
     if case_id:
-        session_store.update_session(session_id, 'last_case_id', case_id)
+        session_store.update_session(session_id, 'last_case_id', case_id, principal=MCP_TRANSPORT_PRINCIPAL)
     if alert_id:
-        session_store.update_session(session_id, 'last_alert_id', alert_id)
+        session_store.update_session(session_id, 'last_alert_id', alert_id, principal=MCP_TRANSPORT_PRINCIPAL)
     if ip:
-        session_store.update_session(session_id, 'last_ip', ip)
+        session_store.update_session(session_id, 'last_ip', ip, principal=MCP_TRANSPORT_PRINCIPAL)
     if user:
-        session_store.update_session(session_id, 'last_user', user)
+        session_store.update_session(session_id, 'last_user', user, principal=MCP_TRANSPORT_PRINCIPAL)
     if domain:
-        session_store.update_session(session_id, 'last_domain', domain)
-    
+        session_store.update_session(session_id, 'last_domain', domain, principal=MCP_TRANSPORT_PRINCIPAL)
+
     return json.dumps({"status": "updated", "session_id": session_id})
 
 @app_mcp.tool()
 def add_investigation_note(session_id: str, note: str) -> str:
     """Add an investigation note to the session."""
-    session = session_store.get_session(session_id)
+    session = session_store.get_session(session_id, principal=MCP_TRANSPORT_PRINCIPAL)
     if not session:
         return json.dumps({"error": "Session not found"})
-    
-    session_store.add_note(session_id, note)
+
+    session_store.add_note(session_id, note, principal=MCP_TRANSPORT_PRINCIPAL)
     return json.dumps({"status": "note_added", "total_notes": len(session['investigation_notes'])})
 
 # ═══════════════════════════════════════════════════════════════
@@ -939,6 +981,10 @@ def list_rules(page_size: int = 100, limit: int = 0, max_results: int = 0, count
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_toggle_rule,
+    entity_extractor=_tp.entities_toggle_rule,
+)
 def toggle_rule(rule_id: str, enabled: bool) -> str:
     """Enable or disable a YARA-L detection rule by its rule ID."""
     try:
@@ -959,6 +1005,10 @@ def toggle_rule(rule_id: str, enabled: bool) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_purge_email_o365,
+    entity_extractor=_tp.entities_purge_email_o365,
+)
 def purge_email_o365(target_mailbox: str, message_id: str, purge_type: str = "hardDelete") -> str:
     """
     Purge an email from an Office 365 mailbox using Microsoft Graph API.
@@ -1012,6 +1062,10 @@ def purge_email_o365(target_mailbox: str, message_id: str, purge_type: str = "ha
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_suspend_okta_user,
+    entity_extractor=_tp.entities_suspend_okta_user,
+)
 def suspend_okta_user(user_email: str, clear_sessions: bool = True) -> str:
     """
     Suspend a user in Okta and optionally clear all active sessions.
@@ -1049,6 +1103,10 @@ def suspend_okta_user(user_email: str, clear_sessions: bool = True) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_revoke_azure_ad_sessions,
+    entity_extractor=_tp.entities_revoke_azure_ad_sessions,
+)
 def revoke_azure_ad_sessions(user_email: str) -> str:
     """Revoke all active sign-in sessions for an Azure AD / Entra ID user."""
     try:
@@ -1083,6 +1141,10 @@ def revoke_azure_ad_sessions(user_email: str) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_revoke_aws_access_keys,
+    entity_extractor=_tp.entities_revoke_aws_access_keys,
+)
 def revoke_aws_access_keys(target_user: str) -> str:
     """Disable all active AWS IAM access keys for a user. Stops leaked credential abuse."""
     try:
@@ -1105,6 +1167,10 @@ def revoke_aws_access_keys(target_user: str) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_revoke_aws_sts_sessions,
+    entity_extractor=_tp.entities_revoke_aws_sts_sessions,
+)
 def revoke_aws_sts_sessions(target_user: str) -> str:
     """
     Deny all pre-existing STS sessions for an AWS IAM user.
@@ -1130,6 +1196,10 @@ def revoke_aws_sts_sessions(target_user: str) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_revoke_gcp_sa_keys,
+    entity_extractor=_tp.entities_revoke_gcp_sa_keys,
+)
 def revoke_gcp_sa_keys(project_id: str = "", service_account_email: str = "") -> str:
     """Delete all user-managed keys for a GCP service account. Stops leaked SA key abuse."""
     try:
@@ -1160,6 +1230,10 @@ def revoke_gcp_sa_keys(project_id: str = "", service_account_email: str = "") ->
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_isolate_crowdstrike_host,
+    entity_extractor=_tp.entities_isolate_crowdstrike_host,
+)
 def isolate_crowdstrike_host(hostname: str = "", device_id: str = "") -> str:
     """
     Network-isolate a host via CrowdStrike Falcon API.
@@ -3772,6 +3846,10 @@ def secops_list_case_comments(case_id: str, limit: int = 100) -> str:
 
 
 @app_mcp.tool()
+@gate.guard(
+    dry_run_builder=_tp.preview_bulk_close_case,
+    entity_extractor=_tp.entities_bulk_close_case,
+)
 def secops_execute_bulk_close_case(case_ids: list, reason: str = "Resolved") -> str:
     """Bulk close multiple SOAR cases."""
     try:
@@ -4110,7 +4188,9 @@ async def api_chat(request: StarletteRequest):
         if not user_msg:
             return JSONResponse({"error": "No message provided"}, status_code=400)
 
-        # Session handling
+        # Session handling — keyed by authenticated principal so tenants stay
+        # isolated on the same Cloud Run instance.
+        principal = principal_from_request(request)
         session_id = (
             body.get("session_id")
             or request.headers.get("x-session-id")
@@ -4118,7 +4198,7 @@ async def api_chat(request: StarletteRequest):
         )
         if not session_id:
             session_id = str(uuid.uuid4())
-        session_store.get_or_create(session_id)
+        session_store.get_or_create(session_id, principal=principal)
 
         # Build functionDeclarations from all registered tools
         all_tools = app_mcp._tool_manager.list_tools()
@@ -4164,7 +4244,7 @@ async def api_chat(request: StarletteRequest):
         }
 
         # Build initial conversation: history + current message
-        history = session_store.get_history(session_id)
+        history = session_store.get_history(session_id, principal=principal)
         contents = history + [{"role": "user", "parts": [{"text": user_msg}]}]
 
         tools_called = []
@@ -4211,8 +4291,8 @@ async def api_chat(request: StarletteRequest):
                 final_text = " ".join(p["text"] for p in parts if "text" in p).strip()
                 if not final_text:
                     final_text = f"Empty response generated by Gemini. (Finish Reason: {candidate.get('finishReason', 'UNKNOWN')})"
-                session_store.append_history(session_id, "user", user_msg)
-                session_store.append_history(session_id, "model", final_text)
+                session_store.append_history(session_id, "user", user_msg, principal=principal)
+                session_store.append_history(session_id, "model", final_text, principal=principal)
                 resp = JSONResponse({
                     "response": final_text,
                     "tools_called": tools_called,
@@ -4270,9 +4350,10 @@ async def api_chat(request: StarletteRequest):
             logger.info(f"Orchestration turn {turn + 1}: called {[t['tool'] for t in tools_called if t['turn'] == turn + 1]}")
 
         # Exhausted all turns
-        session_store.append_history(session_id, "user", user_msg)
+        session_store.append_history(session_id, "user", user_msg, principal=principal)
         session_store.append_history(session_id, "model",
-            f"Investigation completed using {len(tools_called)} tool calls across {MAX_ORCHESTRATION_TURNS} turns."
+            f"Investigation completed using {len(tools_called)} tool calls across {MAX_ORCHESTRATION_TURNS} turns.",
+            principal=principal,
         )
         resp = JSONResponse({
             "response": f"Investigation used {len(tools_called)} tool calls across {MAX_ORCHESTRATION_TURNS} turns. "
@@ -4632,7 +4713,12 @@ _starlette_app = Starlette(
     ]
 )
 
-app = MCPMiddleware(_starlette_app)
+# Wire /api/approvals/* and /api/audit/verify routes into the Starlette app.
+register_http_routes(_starlette_app, gate)
+
+# Auth sits at the outermost layer so /mcp, /sse, /api/*, everything is gated.
+# When OAUTH_CLIENT_ID is unset, AuthMiddleware is a no-op (local dev path).
+app = AuthMiddleware(MCPMiddleware(_starlette_app))
 
 if __name__ == "__main__":
     import uvicorn
@@ -4810,11 +4896,9 @@ def get_last_cases(count: int = 5, n: int = 0, N: int = 0, num_cases: int = 0, l
             project_id=SECOPS_PROJECT_ID,
             region=SECOPS_REGION
         )
-        # Fetch all cases (auto-paginate) and sort by createTime descending
-        result = chronicle.list_cases(as_list=True)
+        # Delegate ordering to the API instead of sorting locally
+        result = chronicle.list_cases(page_size=count, order_by="createTime desc", as_list=True)
         cases = result if isinstance(result, list) else []
-        # Sort by createTime descending (newest first) — createTime is millisecond epoch string
-        cases.sort(key=lambda c: int(c.get('createTime', c.get('create_time', '0')) or '0'), reverse=True)
         cases = cases[:count]
         return json.dumps({"count": len(cases), "cases": cases})
     except Exception as e:

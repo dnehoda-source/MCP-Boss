@@ -1,0 +1,180 @@
+# MCP Boss default policy set.
+# First matching rule (by priority, descending) wins.
+#
+# Edit freely — this file is the single source of truth for "what can the LLM do
+# autonomously vs what needs a human."
+
+default_decision: require_approval
+default_approvers: [security-oncall]
+
+rules:
+  # ─── Read-only tools: always allow ─────────────────────────────────────
+  - name: "Read-only discovery and intel tools always allowed"
+    tools:
+      - get_scc_findings
+      - list_scc_findings_custom
+      - get_scc_finding_details
+      - query_cloud_logging
+      - search_secops_udm
+      - list_secops_detections
+      - check_ingestion_health
+      - enrich_indicator
+      - get_file_report
+      - get_domain_report
+      - get_ip_report
+      - search_threat_actors
+      - search_malware_families
+      - extract_iocs_from_detections
+      - vertex_ai_investigate
+      - list_data_tables
+      - get_data_table
+      - list_rules
+      - get_rule
+      - list_rule_errors
+      - list_cases
+      - get_last_cases
+      - get_case_alerts
+      - list_case_comments
+      - get_case_overview
+      - secops_list_cases
+      - secops_get_case
+      - secops_list_case_alerts
+      - secops_get_case_alert
+      - secops_list_case_comments
+      - top_vulnerability_findings
+      - get_finding_remediation
+      - list_log_entries
+      - list_log_names
+      - list_log_buckets
+      - get_log_bucket
+      - list_log_views
+      - query_secops_audit_logs
+      - list_feeds
+      - get_feed
+      - query_ingestion_stats
+      - list_data_access_labels
+      - list_data_access_scopes
+      - list_parsers
+      - validate_parser
+      - list_playbooks
+      - get_playbook
+      - bigquery_list_dataset_ids
+      - bigquery_list_table_ids
+      - bigquery_get_dataset_info
+      - bigquery_get_table_info
+      - bigquery_execute_sql
+      - get_mttx_metrics
+      - create_session
+      - get_session
+      - set_session_context
+      - add_investigation_note
+      - get_last_logins
+      - get_last_detections
+      - search_security_events
+      - get_security_alerts
+      - lookup_entity
+    decision: allow
+    reason: "Read-only tool, no side effects"
+    priority: 1000
+
+  # ─── Production containment during freeze window: DENY ─────────────────
+  - name: "Block production containment during weekend change freeze"
+    tools:
+      - isolate_crowdstrike_host
+      - revoke_aws_access_keys
+      - revoke_aws_sts_sessions
+      - revoke_gcp_sa_keys
+      - revoke_azure_ad_sessions
+      - suspend_okta_user
+      - purge_email_o365
+    decision: deny
+    when_entities:
+      environment: prod
+    freeze_windows:
+      - days: [Fri, Sat, Sun]
+        start: "18:00"
+        end:   "06:00"
+    approvers: [security-leadership]
+    reason: "Production change freeze — contact security-leadership to override"
+    priority: 500
+
+  # ─── Protected identities: never auto-suspend executives/service accounts ──
+  - name: "Never auto-suspend protected identities"
+    tools:
+      - suspend_okta_user
+      - revoke_azure_ad_sessions
+      - revoke_aws_access_keys
+      - revoke_gcp_sa_keys
+    decision: deny
+    when_entities:
+      user_email: "re:(ceo|cfo|cto|ciso|svp|evp)@"
+    approvers: [security-leadership, legal]
+    reason: "Protected identity — requires manual runbook and legal sign-off"
+    priority: 400
+
+  # ─── Destructive containment: require approval ────────────────────────
+  - name: "Endpoint isolation requires approval"
+    tools: [isolate_crowdstrike_host]
+    decision: require_approval
+    approvers: [security-oncall, soc-manager]
+    reason: "Host isolation breaks legitimate user work — confirm TP"
+    priority: 100
+
+  - name: "Identity suspension requires approval"
+    tools: [suspend_okta_user, revoke_azure_ad_sessions]
+    decision: require_approval
+    approvers: [security-oncall, identity-team]
+    reason: "User lockout impacts business — confirm compromise"
+    priority: 100
+
+  - name: "Cloud credential revocation requires approval"
+    tools: [revoke_aws_access_keys, revoke_aws_sts_sessions, revoke_gcp_sa_keys]
+    decision: require_approval
+    approvers: [security-oncall, cloud-platform]
+    reason: "Key revocation may break production workloads"
+    priority: 100
+
+  - name: "Email purge requires approval"
+    tools: [purge_email_o365]
+    decision: require_approval
+    approvers: [security-oncall]
+    reason: "Permanent email deletion — confirm phishing classification"
+    priority: 100
+
+  # ─── Detection engineering: require approval for disable / bulk close ──
+  - name: "Disabling detection rules requires approval"
+    tools: [toggle_rule]
+    decision: require_approval
+    when_entities:
+      action: disable
+    approvers: [detection-engineering]
+    reason: "Disabling rules reduces coverage — confirm with DE team"
+    priority: 100
+
+  - name: "Bulk case close requires approval"
+    tools: [secops_execute_bulk_close_case]
+    decision: require_approval
+    approvers: [soc-manager]
+    reason: "Bulk closes can hide real incidents — confirm"
+    priority: 100
+
+  # ─── Case mutation: allow (low blast radius) ──────────────────────────
+  - name: "Case comments and priority updates allowed"
+    tools:
+      - add_case_comment
+      - secops_create_case_comment
+      - update_case_priority
+      - secops_update_case
+      - secops_update_case_alert
+      - create_soar_case
+      - update_soar_case
+      - close_case
+      - secops_execute_manual_action
+      - create_playbook
+      - create_containment_playbook
+      - create_rule
+      - create_detection_rule_for_scc_finding
+      - update_data_table
+    decision: allow
+    reason: "Case/rule/playbook authoring — low blast radius, fully reversible"
+    priority: 50

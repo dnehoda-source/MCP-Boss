@@ -1,0 +1,31 @@
+id: s002-phish-okta-compromise
+name: "Successful phish → Okta session compromise → lateral movement attempt"
+mitre_tactics: [TA0001, TA0008]   # Initial Access, Lateral Movement
+mitre_techniques: [T1566.001, T1021.004]
+
+seed_prompt: |
+  alice@company.com clicked a phishing link 90 minutes ago, entered creds,
+  and a session token was exfiltrated. Subsequent UDM events show an impossible
+  travel login (US → Nigeria within 12 minutes) followed by attempted SSH to
+  corp-bastion-01. Investigate and contain.
+
+ground_truth:
+  verdict: true_positive
+  required_tools:
+    - lookup_entity
+    - search_secops_udm
+    - query_cloud_logging
+  should_contain:
+    - tool: suspend_okta_user
+      entities: {user_email: "alice@company.com"}
+    - tool: revoke_azure_ad_sessions
+      entities: {user_email: "alice@company.com"}
+    - tool: purge_email_o365
+      entities: {mailbox: "alice@company.com"}   # the phishing email
+  must_not_contain:
+    - tool: revoke_aws_access_keys   # no AWS component
+
+scoring:
+  weight_tool_selection: 0.3
+  weight_containment_correctness: 0.6
+  weight_false_positive_rate: 0.1
