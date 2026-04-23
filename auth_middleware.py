@@ -58,6 +58,7 @@ KNOWN_ROLES = {
 _DEFAULT_EXEMPT_PREFIXES: Tuple[str, ...] = (
     "/health",
     "/static",
+    "/api/auth-config",
 )
 
 # Path prefixes that REQUIRE auth. Anything not in this set is treated as

@@ -4174,6 +4174,14 @@ async def api_tools(request: StarletteRequest):
     return JSONResponse(tool_list)
 
 
+async def api_auth_config(request: StarletteRequest):
+    """Browser boot endpoint: returns the OAuth client ID so the Google
+    Sign-In button can render. Never gated by the auth middleware itself
+    (that's why it lives on an exempt path)."""
+    cid = os.environ.get("OAUTH_CLIENT_ID", "")
+    return JSONResponse({"client_id": cid, "auth_required": bool(cid)})
+
+
 MAX_ORCHESTRATION_TURNS = 20  # enough for complex multi-step hunts
 
 
@@ -4713,6 +4721,7 @@ _starlette_app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/health", endpoint=health_check),
+        Route("/api/auth-config", endpoint=api_auth_config),
         Route("/api/tools", endpoint=api_tools),
         Route("/api/chat", endpoint=api_chat, methods=["POST"]),
         Route("/sse", endpoint=handle_sse),
