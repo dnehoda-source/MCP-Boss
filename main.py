@@ -3096,9 +3096,11 @@ def autonomous_investigate(
                 if search_resp.status_code == 200:
                     search_results = search_resp.json()
                     step2["events_found"] = len(search_results.get("events", []))
+                    step2["sample_events"] = [(e.get("event") or e) for e in (search_results.get("events") or [])][:20]
                 else:
                     search_results = {"error": f"Search returned {search_resp.status_code}"}
                     step2["events_found"] = 0
+                    step2["sample_events"] = []
             except Exception as e:
                 search_results = {"error": str(e)}
                 step2["events_found"] = 0
@@ -3294,77 +3296,89 @@ def autonomous_investigate(
         results["steps"].append(step5)
 
         # ── STEP 5B: EXECUTE CONTAINMENT (if severity warrants it) ──
+        # Actually call the containment tools. The policy gate decides whether
+        # to execute, route to a human approver, or deny. Nothing destructive
+        # runs outside that gate, so it is safe to be aggressive here.
         step5b = {"step": "5B_CONTAIN", "status": "running", "actions": []}
-        
-        if severity == "CRITICAL" and trigger_type in ("ip", "domain", "hash"):
-            # Auto-containment for CRITICAL threats
-            
-            # Action 1: If IP, search for affected hosts and isolate if CrowdStrike is configured
-            if trigger_type == "ip" and CS_CLIENT_ID:
+
+        def _log_action(action: str, detail: str, result: any = None):
+            entry = {"action": action, "detail": detail}
+            if result is not None:
                 try:
-                    # Find hosts that communicated with this IP via UDM search results
-                    # For now, log the containment intent
-                    step5b["actions"].append({
-                        "action": "CROWDSTRIKE_ISOLATE_PENDING",
-                        "detail": f"Hosts communicating with {trigger} identified. CrowdStrike isolation available.",
-                        "requires_approval": True,
-                    })
-                    results["actions_taken"].append(f"CrowdStrike isolation queued for hosts contacting {trigger}")
-                except Exception as e:
-                    step5b["actions"].append({"action": "CROWDSTRIKE_ERROR", "detail": str(e)})
-            
-            # Action 2: If domain/IP, add to blocklist Data Table
-            if trigger_type in ("ip", "domain"):
-                try:
-                    blocklist_resp = requests.patch(
-                        f"{SECOPS_BASE_URL}/dataTables/automated_blocklist",
-                        headers=_secops_headers(),
-                        json={
-                            "name": "automated_blocklist",
-                            "rows": [{"values": [trigger, trigger_type, severity, datetime.now(timezone.utc).isoformat()]}],
-                        },
-                        timeout=15,
-                    )
-                    if blocklist_resp.status_code in (200, 201):
-                        step5b["actions"].append({
-                            "action": "ADDED_TO_BLOCKLIST",
-                            "detail": f"{trigger} added to automated_blocklist Data Table",
-                        })
-                        results["actions_taken"].append(f"Added {trigger} to automated_blocklist Data Table")
-                    else:
-                        step5b["actions"].append({
-                            "action": "BLOCKLIST_NOTE",
-                            "detail": f"Could not add to blocklist (API {blocklist_resp.status_code}). Create 'automated_blocklist' Data Table in SecOps if it doesn't exist.",
-                        })
-                except Exception as e:
-                    step5b["actions"].append({"action": "BLOCKLIST_ERROR", "detail": str(e)})
-            
-            # Action 3: If compromised user found in UDM events, suspend in Okta
-            if OKTA_DOMAIN and OKTA_API_TOKEN and events_found > 0:
-                step5b["actions"].append({
-                    "action": "OKTA_SUSPEND_AVAILABLE",
-                    "detail": "Affected users can be suspended via Okta. Use suspend_okta_user tool with the specific email.",
-                    "requires_approval": True,
-                })
-            
-            # Action 4: If hash, check if file is on any endpoints
-            if trigger_type == "hash":
-                step5b["actions"].append({
-                    "action": "ENDPOINT_SCAN_RECOMMENDED",
-                    "detail": f"Hash {trigger} should be swept across all endpoints. Use CrowdStrike RTR or Defender Live Response.",
-                })
-        
-        elif severity == "HIGH":
-            step5b["actions"].append({
-                "action": "MONITORING",
-                "detail": "Severity HIGH — automated monitoring active. Manual containment available via individual tools.",
-            })
-        else:
-            step5b["actions"].append({
-                "action": "NO_CONTAINMENT_NEEDED",
-                "detail": f"Severity {severity} does not warrant automated containment.",
-            })
-        
+                    entry["result"] = json.loads(result) if isinstance(result, str) else result
+                except Exception:
+                    entry["result"] = str(result)[:300]
+            step5b["actions"].append(entry)
+            results["actions_taken"].append(f"{action}: {detail}")
+
+        contain = severity in ("CRITICAL", "HIGH")
+
+        if contain and trigger_type in ("ip", "domain"):
+            try:
+                blocklist_resp = requests.patch(
+                    f"{SECOPS_BASE_URL}/dataTables/automated_blocklist",
+                    headers=_secops_headers(),
+                    json={
+                        "name": "automated_blocklist",
+                        "rows": [{"values": [trigger, trigger_type, severity, datetime.now(timezone.utc).isoformat()]}],
+                    },
+                    timeout=15,
+                )
+                if blocklist_resp.status_code in (200, 201):
+                    _log_action("ADDED_TO_BLOCKLIST", f"{trigger} added to automated_blocklist Data Table")
+                else:
+                    _log_action("BLOCKLIST_SKIP", f"API {blocklist_resp.status_code}; create 'automated_blocklist' Data Table if missing")
+            except Exception as e:
+                _log_action("BLOCKLIST_ERROR", str(e))
+
+        if contain and trigger_type == "hash":
+            _log_action("ENDPOINT_SWEEP_RECOMMENDED", f"Hash {trigger} should be swept; use CrowdStrike RTR / Defender Live Response")
+
+        # Extract affected user / host / SA from the UDM events we found in step 2
+        affected_user = ""
+        affected_host = ""
+        affected_sa = ""
+        sample_events = step2.get("sample_events", []) or []
+        try:
+            for ev in sample_events[:20]:
+                if not affected_user:
+                    affected_user = (ev.get("principal", {}).get("user", {}) or {}).get("userid", "") or affected_user
+                if not affected_host:
+                    affected_host = ev.get("principal", {}).get("hostname", "") or affected_host
+                if not affected_sa and affected_user and "iam.gserviceaccount.com" in affected_user:
+                    affected_sa = affected_user
+        except Exception:
+            pass
+
+        if contain and affected_host and CS_CLIENT_ID:
+            try:
+                res = isolate_crowdstrike_host(hostname=affected_host)
+                _log_action("ISOLATE_HOST", f"CrowdStrike isolation requested for {affected_host}", res)
+            except Exception as e:
+                _log_action("ISOLATE_HOST_ERROR", str(e))
+
+        if contain and affected_user and "iam.gserviceaccount.com" in affected_user:
+            try:
+                res = revoke_gcp_sa_keys(service_account_email=affected_user, project_id=pid)
+                _log_action("REVOKE_SA_KEYS", f"Requested GCP SA key revocation for {affected_user}", res)
+            except Exception as e:
+                _log_action("REVOKE_SA_KEYS_ERROR", str(e))
+        elif contain and affected_user and OKTA_DOMAIN and OKTA_API_TOKEN:
+            try:
+                res = suspend_okta_user(email=affected_user)
+                _log_action("SUSPEND_OKTA_USER", f"Requested Okta suspension for {affected_user}", res)
+            except Exception as e:
+                _log_action("SUSPEND_OKTA_ERROR", str(e))
+        elif contain and affected_user and AZURE_AD_CLIENT_ID:
+            try:
+                res = revoke_azure_ad_sessions(user_principal_name=affected_user)
+                _log_action("REVOKE_AZURE_SESSIONS", f"Requested Azure AD session revocation for {affected_user}", res)
+            except Exception as e:
+                _log_action("REVOKE_AZURE_ERROR", str(e))
+
+        if not step5b["actions"]:
+            _log_action("NO_CONTAINMENT_NEEDED", f"Severity {severity} does not warrant automated containment.")
+
         step5b["status"] = "complete"
         results["steps"].append(step5b)
 
@@ -3477,6 +3491,165 @@ Be specific. Use the actual data provided. Do not hallucinate findings."""
     except Exception as e:
         logger.error(f"Autonomous investigation error: {e}")
         return json.dumps({"error": str(e), "trigger": trigger})
+
+
+# ═══════════════════════════════════════════════════════════════
+# 📘 PLAYBOOKS — hardcoded response chains for common attack types
+# Each playbook runs the same set of steps every time. The policy
+# gate decides whether each containment call executes or routes to
+# a human approver; playbooks do not bypass it.
+# ═══════════════════════════════════════════════════════════════
+
+
+def _playbook_run(steps: list, case_id: str = "") -> dict:
+    """Execute an ordered list of {name, fn} steps, capturing results and
+    never aborting on individual step failure so the caller sees the whole
+    report. Auto-annotates the case with each step's outcome if case_id is set."""
+    out = {"steps": [], "actions_taken": [], "errors": []}
+    for step in steps:
+        name = step.get("name", "step")
+        fn = step.get("fn")
+        try:
+            result = fn() if fn else None
+            entry = {"step": name, "status": "ok", "result": result}
+            if isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict) and parsed.get("error"):
+                        entry["status"] = "error"
+                        out["errors"].append({"step": name, "error": parsed["error"]})
+                    else:
+                        entry["result"] = parsed
+                except Exception:
+                    pass
+            out["steps"].append(entry)
+            out["actions_taken"].append(name)
+            if case_id:
+                try:
+                    secops_create_case_comment(case_id, comment=f"[playbook] {name}: {json.dumps(entry.get('result'))[:500]}")
+                except Exception:
+                    pass
+        except Exception as exc:
+            out["steps"].append({"step": name, "status": "error", "error": str(exc)})
+            out["errors"].append({"step": name, "error": str(exc)})
+    return out
+
+
+@app_mcp.tool()
+def playbook_phish_response(
+    user_email: str,
+    message_id: str = "",
+    sender: str = "",
+    url_or_domain: str = "",
+    case_id: str = "",
+) -> str:
+    """Phishing response playbook. Enriches the sender and any URL, searches
+    SIEM for co-recipients, creates or updates a SOAR case, purges the email
+    from the reporter's mailbox, and revokes the user's Azure AD sessions if
+    there's any sign of credential compromise. Every destructive step goes
+    through the policy gate."""
+    steps = []
+    if url_or_domain:
+        steps.append({"name": "enrich_url_or_domain", "fn": lambda: enrich_indicator(url_or_domain)})
+    if sender:
+        steps.append({"name": "enrich_sender_domain", "fn": lambda: enrich_indicator(sender.split("@")[-1] if "@" in sender else sender)})
+    steps.append({"name": "search_cohorts_in_secops",
+                  "fn": lambda: search_secops_udm(f'metadata.event_type = "EMAIL_TRANSACTION" AND network.email.from = "{sender}"', minutes_back=1440) if sender else search_secops_udm(f'principal.user.userid = "{user_email}"', minutes_back=1440)})
+    if not case_id:
+        steps.append({"name": "create_soar_case",
+                      "fn": lambda: create_soar_case(f"Phish report from {user_email}", description=f"Reported email from {sender or 'unknown'} containing {url_or_domain or 'payload'}", priority="HIGH")})
+    if message_id:
+        steps.append({"name": "purge_email_o365",
+                      "fn": lambda: purge_email_o365(target_mailbox=user_email, message_id=message_id)})
+    steps.append({"name": "revoke_azure_ad_sessions",
+                  "fn": lambda: revoke_azure_ad_sessions(user_principal_name=user_email)})
+    result = _playbook_run(steps, case_id=case_id)
+    return json.dumps({"playbook": "phish_response", "user": user_email, **result}, indent=2, default=str)
+
+
+@app_mcp.tool()
+def playbook_compromised_service_account(
+    sa_email: str,
+    project_id: str = "",
+    case_id: str = "",
+    cloud: str = "gcp",
+) -> str:
+    """Compromised service account response. Lists recent key activity,
+    revokes all non-managed keys (GCP) or access keys and STS sessions (AWS),
+    opens / updates a SOAR case, and creates a detection rule for any
+    follow-on impersonation attempts."""
+    pid = project_id or SECOPS_PROJECT_ID
+    steps = []
+    steps.append({"name": "query_recent_activity",
+                  "fn": lambda: query_cloud_logging(filter=f'protoPayload.authenticationInfo.principalEmail="{sa_email}"', limit=200, project_id=pid) if cloud == "gcp" else search_secops_udm(f'principal.user.userid = "{sa_email}"', minutes_back=720)})
+    if cloud == "gcp":
+        steps.append({"name": "revoke_gcp_sa_keys",
+                      "fn": lambda: revoke_gcp_sa_keys(service_account_email=sa_email, project_id=pid)})
+    elif cloud == "aws":
+        steps.append({"name": "revoke_aws_access_keys",
+                      "fn": lambda: revoke_aws_access_keys(iam_user=sa_email.split("@")[0])})
+        steps.append({"name": "revoke_aws_sts_sessions",
+                      "fn": lambda: revoke_aws_sts_sessions(iam_user=sa_email.split("@")[0])})
+    if not case_id:
+        steps.append({"name": "create_soar_case",
+                      "fn": lambda: create_soar_case(f"Compromised SA: {sa_email}", description=f"Service account {sa_email} flagged as compromised on {cloud}", priority="CRITICAL")})
+    steps.append({"name": "create_detection_rule",
+                  "fn": lambda: create_detection_rule_for_scc_finding(finding_category="Impersonation Role Granted", resource=sa_email, severity="HIGH")})
+    result = _playbook_run(steps, case_id=case_id)
+    return json.dumps({"playbook": "compromised_service_account", "sa": sa_email, "cloud": cloud, **result}, indent=2, default=str)
+
+
+@app_mcp.tool()
+def playbook_ransomware_host(
+    hostname: str,
+    observed_hash: str = "",
+    case_id: str = "",
+) -> str:
+    """Ransomware response playbook. Isolates the host via CrowdStrike,
+    searches SIEM for lateral movement from that host over the last 24h,
+    enriches the observed hash, opens a CRITICAL SOAR case, and creates a
+    detection rule for the hash so other endpoints get caught on first
+    contact."""
+    steps = [
+        {"name": "isolate_crowdstrike_host",
+         "fn": lambda: isolate_crowdstrike_host(hostname=hostname)},
+        {"name": "search_lateral_from_host",
+         "fn": lambda: search_secops_udm(f'principal.hostname = "{hostname}" AND metadata.event_type = "NETWORK_CONNECTION"', minutes_back=1440)},
+    ]
+    if observed_hash:
+        steps.append({"name": "enrich_hash", "fn": lambda: enrich_indicator(observed_hash)})
+    if not case_id:
+        steps.append({"name": "create_soar_case",
+                      "fn": lambda: create_soar_case(f"Ransomware on {hostname}", description=f"Host {hostname} exhibited ransomware activity. Hash: {observed_hash or 'unknown'}", priority="CRITICAL")})
+    if observed_hash:
+        steps.append({"name": "create_detection_rule",
+                      "fn": lambda: create_detection_rule_for_scc_finding(finding_category=f"Malware hash {observed_hash}", resource=hostname, severity="CRITICAL")})
+    result = _playbook_run(steps, case_id=case_id)
+    return json.dumps({"playbook": "ransomware_host", "host": hostname, **result}, indent=2, default=str)
+
+
+@app_mcp.tool()
+def playbook_bec_inbox_rule(
+    user_email: str,
+    forwarding_target: str = "",
+    case_id: str = "",
+) -> str:
+    """Business Email Compromise response when a malicious inbox rule or
+    external forward is discovered. Revokes sessions, creates a SOAR case,
+    searches for other mailboxes with the same forwarding target, and
+    triggers a case comment with follow-up actions for the IR team."""
+    steps = [
+        {"name": "revoke_azure_ad_sessions",
+         "fn": lambda: revoke_azure_ad_sessions(user_principal_name=user_email)},
+    ]
+    if forwarding_target:
+        steps.append({"name": "search_other_mailboxes_with_same_forward",
+                      "fn": lambda: search_secops_udm(f'network.email.to = "{forwarding_target}"', minutes_back=10080)})
+    if not case_id:
+        steps.append({"name": "create_soar_case",
+                      "fn": lambda: create_soar_case(f"BEC suspected: {user_email}", description=f"Malicious forwarding rule discovered on {user_email}. External target: {forwarding_target or 'unknown'}", priority="HIGH")})
+    result = _playbook_run(steps, case_id=case_id)
+    return json.dumps({"playbook": "bec_inbox_rule", "user": user_email, **result}, indent=2, default=str)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4237,18 +4410,41 @@ async def api_chat(request: StarletteRequest):
         )
         system_instruction = {
             "parts": [{"text": (
-                "You are an elite security analyst with full access to SecOps (Chronicle SIEM), "
-                "Security Command Center (SCC), Google Threat Intelligence (GTI/VirusTotal), "
-                "Cloud Logging, SOAR case management, and cross-platform containment tools. "
-                "When given a complex investigation, call multiple tools in sequence — "
-                "do NOT stop after one tool call. Chain tools together to build a complete picture. "
-                "For threat actor hunts: 1) Look up threat intel, 2) Search SIEM for IOCs, "
-                "3) Check SCC for vulnerabilities, 4) Correlate findings, 5) Produce an executive summary. "
-                "If a tool returns no results or errors, try alternative approaches or aliases "
-                "(e.g., APT28 -> Fancy Bear -> STRONTIUM). "
-                f"Default project_id is {SECOPS_PROJECT_ID}. "
-                "When you have enough information, produce a clear final text summary — "
-                "that signals the end of the investigation. Be specific and actionable."
+                "You are an autonomous SOC analyst with full access to SecOps (Chronicle SIEM), "
+                "Security Command Center, Google Threat Intelligence, Cloud Logging, SOAR, and "
+                "cross-platform containment (O365, Okta, Azure AD, AWS, GCP, CrowdStrike).\n\n"
+                "ENTRY-POINT ROUTING (pick the right starting tool):\n"
+                "- Alert / finding / IOC / 'investigate X' / 'hunt X' → call autonomous_investigate first. "
+                "It runs the full identify → enrich → search → assess → detect → contain → report pipeline.\n"
+                "- Phishing email reported / inbox rule abuse → call playbook_phish_response.\n"
+                "- Service account keys leaked / SA impersonation → call playbook_compromised_service_account.\n"
+                "- Ransomware / mass file encryption on a host → call playbook_ransomware_host.\n"
+                "- Business Email Compromise / malicious forwarding rule → call playbook_bec_inbox_rule.\n\n"
+                "ACTION MANDATE (most important):\n"
+                "If you confirm a TRUE POSITIVE, you MUST call the appropriate containment tool BEFORE "
+                "producing the final summary. The policy gate decides whether to execute, route to a "
+                "human approver, or deny — it is safe to be aggressive, because nothing destructive "
+                "runs without policy sign-off. Do not ask the user for permission first; call the tool.\n\n"
+                "ENTITY → CONTAINMENT TOOL MAP:\n"
+                "- Compromised user (Okta / generic) → suspend_okta_user\n"
+                "- Compromised user (Azure AD / O365) → revoke_azure_ad_sessions\n"
+                "- Compromised AWS IAM user / access key → revoke_aws_access_keys (plus revoke_aws_sts_sessions)\n"
+                "- Compromised GCP service account → revoke_gcp_sa_keys\n"
+                "- Compromised endpoint → isolate_crowdstrike_host\n"
+                "- Phishing email delivered → purge_email_o365\n"
+                "- Detection coverage gap found → create_rule or toggle_rule enable\n"
+                "- Bulk close of obvious FPs → secops_execute_bulk_close_case\n\n"
+                "WORKFLOW GUIDANCE:\n"
+                "- Chain tools; do not stop after one call. Keep going until the investigation has a "
+                "verdict AND, if TP, a containment action plus a SOAR case.\n"
+                "- If a tool returns no results, try aliases and alternative paths "
+                "(APT28 → Fancy Bear → STRONTIUM; same for other threat groups).\n"
+                "- For every TP you contain: also call create_soar_case or secops_update_case so the "
+                "SOC team has a record.\n"
+                "- For high-signal detection gaps: call create_rule to close them.\n\n"
+                f"Default project_id is {SECOPS_PROJECT_ID}. Be specific, be actionable, and finish "
+                "with a final text summary that lists verdict, entities, containment actions taken, "
+                "and the case ID."
             )}],
         }
 
