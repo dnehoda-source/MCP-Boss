@@ -1856,13 +1856,46 @@ def search_threat_actors(query: str = "", actor_query: str = "", threat_actor_qu
                                         "attributes": {k: v for k, v in (item.get("attributes") or {}).items() if k in ("reputation", "last_analysis_stats", "tags", "meaningful_name", "names", "last_modification_date")},
                                     })
                     if actor_collections or any(actor_iocs.values()):
+                        # Build a plain-text block Gemini can echo directly so
+                        # the user sees concrete GTI data in the final summary,
+                        # not a vague 'Mandiant was consulted' line.
+                        top = actor_collections[0] if actor_collections else {}
+                        sample_files = [i.get("id", "")[:16] + "..." for i in actor_iocs["files"][:5] if i.get("id")]
+                        sample_domains = [i.get("id") for i in actor_iocs["domains"][:5] if i.get("id")]
+                        sample_ips = [i.get("id") for i in actor_iocs["ip_addresses"][:5] if i.get("id")]
+                        sample_urls = [i.get("id", "")[:80] for i in actor_iocs["urls"][:3] if i.get("id")]
+                        lines = [
+                            f"Mandiant GTI profile: {top.get('name', final_query)}",
+                        ]
+                        if top.get("aliases"):
+                            lines.append(f"  Aliases: {', '.join(top['aliases'][:6])}")
+                        if top.get("motivations"):
+                            lines.append(f"  Motivations: {', '.join(top['motivations'][:5])}")
+                        if top.get("targeted_regions"):
+                            lines.append(f"  Targeted regions: {', '.join(top['targeted_regions'][:8])}")
+                        if top.get("targeted_industries"):
+                            lines.append(f"  Targeted industries: {', '.join(top['targeted_industries'][:8])}")
+                        if top.get("first_seen") or top.get("last_seen"):
+                            lines.append(f"  Active: first_seen={top.get('first_seen')} last_seen={top.get('last_seen')}")
+                        totals = {k: len(v) for k, v in actor_iocs.items()}
+                        lines.append(f"  Indicator counts (Mandiant catalog): files={totals['files']} domains={totals['domains']} ips={totals['ip_addresses']} urls={totals['urls']}")
+                        if sample_files:
+                            lines.append(f"  Sample hashes: {', '.join(sample_files)}")
+                        if sample_domains:
+                            lines.append(f"  Sample domains: {', '.join(sample_domains)}")
+                        if sample_ips:
+                            lines.append(f"  Sample IPs: {', '.join(sample_ips)}")
+                        if sample_urls:
+                            lines.append(f"  Sample URLs: {', '.join(sample_urls)}")
+                        gti_summary_text = "\n".join(lines)
                         return json.dumps({
                             "source": "Mandiant GTI (collections)",
                             "query": final_query,
                             "aliases": list(query_aliases),
+                            "gti_summary_text": gti_summary_text,
                             "actor_profile": actor_collections[:1],
                             "indicators": actor_iocs,
-                            "note": "Indicators fetched from the Mandiant actor catalog. Cross-reference with UDM via search_secops_udm to see if any were observed in-tenant.",
+                            "note": "Indicators fetched from the Mandiant actor catalog. Cross-reference with UDM via search_secops_udm to see if any were observed in-tenant. Include gti_summary_text verbatim in any user-facing response so the analyst sees concrete GTI data.",
                             "tenant_observed_count": 0,
                         })
                 except Exception as gti_exc:
@@ -4603,6 +4636,12 @@ async def api_chat(request: StarletteRequest):
                 "- Phishing email delivered → purge_email_o365\n"
                 "- Detection coverage gap found → create_rule or toggle_rule enable\n"
                 "- Bulk close of obvious FPs → secops_execute_bulk_close_case\n\n"
+                "WHEN A THREAT-INTEL TOOL IS CALLED:\n"
+                "If search_threat_actors returned a gti_summary_text field or an "
+                "actor_profile + indicators block, include the gti_summary_text verbatim "
+                "in your final response (or, if absent, list at minimum the actor aliases, "
+                "motivations, and 3+ sample indicators). The user needs to see concrete "
+                "GTI data, not a claim that Mandiant was consulted.\n\n"
                 "WORKFLOW GUIDANCE:\n"
                 "- Chain tools; do not stop after one call. Keep going until the investigation has a "
                 "verdict AND, if TP, a containment action plus a SOAR case.\n"
