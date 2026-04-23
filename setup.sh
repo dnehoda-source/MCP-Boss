@@ -5,17 +5,17 @@
 #
 # Usage:
 #   # Interactive (clone first):
-#   git clone https://github.com/dnehoda-source/MCP-Boss.git
+#   git clone https://github.com/dadohen/MCP-Boss.git
 #   cd MCP-Boss && ./setup.sh
 #
 #   # One-liner with arguments:
-#   curl -sL https://raw.githubusercontent.com/dnehoda-source/MCP-Boss/main/setup.sh | bash -s -- \
+#   curl -sL https://raw.githubusercontent.com/dadohen/MCP-Boss/main/setup.sh | bash -s -- \
 #     --project your-project-id \
 #     --customer your-secops-customer-id \
 #     --gti-key your-vt-api-key
 #
 #   # Minimal (GTI key optional):
-#   curl -sL https://raw.githubusercontent.com/dnehoda-source/MCP-Boss/main/setup.sh | bash -s -- \
+#   curl -sL https://raw.githubusercontent.com/dadohen/MCP-Boss/main/setup.sh | bash -s -- \
 #     --project my-project --customer abc123def456
 #
 # ═══════════════════════════════════════════════════════════════
@@ -109,7 +109,7 @@ fi
 if [ ! -f "main.py" ] && [ ! -f "Dockerfile" ]; then
     echo -e "${YELLOW}Cloning MCP Boss...${NC}"
     TMPDIR=$(mktemp -d)
-    git clone --depth 1 https://github.com/dnehoda-source/MCP-Boss.git "$TMPDIR/MCP-Boss" 2>/dev/null
+    git clone --depth 1 https://github.com/dadohen/MCP-Boss.git "$TMPDIR/MCP-Boss" 2>/dev/null
     cd "$TMPDIR/MCP-Boss"
     echo -e "${GREEN}✅ Cloned${NC}"
 fi

@@ -167,7 +167,7 @@ The system has 60 tools organized into categories:
 - **Zero embedded secrets.** Authentication uses Google's Workload Identity — no passwords or API keys stored in the code.
 - **Your permissions apply.** The system can only access what your Google Cloud account can access. It doesn't get special privileges.
 - **Destructive actions require approval.** The system won't isolate a host or suspend a user without explicit approval. Blocklist updates are automatic; everything else asks first.
-- **Open source.** You can read every line of code: https://github.com/dnehoda-source/Google-Native-MCP-Server
+- **Open source.** You can read every line of code: https://github.com/dadohen/Google-Native-MCP-Server
 
 ## Cost
 

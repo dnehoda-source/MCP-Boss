@@ -247,4 +247,4 @@ A: Yes. Grant only `roles/chronicle.viewer` instead of `roles/chronicle.admin`. 
 A: No. It runs entirely in your Google Cloud project. The only external calls are to VirusTotal (if you configure it) and to the third-party integrations you explicitly enable (Okta, O365, AWS, CrowdStrike). All of those calls go to YOUR accounts using YOUR API keys.
 
 **Q: Is the source code auditable?**
-A: Yes. It's fully open source: https://github.com/dnehoda-source/Google-Native-MCP-Server
+A: Yes. It's fully open source: https://github.com/dadohen/Google-Native-MCP-Server

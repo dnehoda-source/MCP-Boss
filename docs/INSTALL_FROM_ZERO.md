@@ -127,7 +127,7 @@ You need to get the MCP Server code from GitHub onto your computer. Pick the eas
 ### Option A: Download as ZIP (No Git Required — Easiest)
 
 1. Open your browser
-2. Go to: **https://github.com/dnehoda-source/Google-Native-MCP-Server**
+2. Go to: **https://github.com/dadohen/Google-Native-MCP-Server**
 3. Look for the big green button that says **"<> Code"**
 4. Click it
 5. In the dropdown, click **"Download ZIP"**
@@ -147,7 +147,7 @@ cd ~/Downloads/Google-Native-MCP-Server-main
 
 ```bash
 cd ~/Desktop
-git clone https://github.com/dnehoda-source/Google-Native-MCP-Server.git
+git clone https://github.com/dadohen/Google-Native-MCP-Server.git
 cd Google-Native-MCP-Server
 ```
 
@@ -699,7 +699,7 @@ The entire deployment in one block:
 # Setup
 gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
-git clone https://github.com/dnehoda-source/Google-Native-MCP-Server.git
+git clone https://github.com/dadohen/Google-Native-MCP-Server.git
 cd Google-Native-MCP-Server
 
 # Enable APIs
