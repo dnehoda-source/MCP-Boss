@@ -3068,7 +3068,7 @@ def autonomous_investigate(
 
         # ── STEP 1: IDENTIFY & ENRICH ──
         step1 = {"step": "1_IDENTIFY", "status": "running"}
-        
+
         # Auto-detect trigger type
         if trigger_type == "auto":
             if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", trigger):
@@ -3079,8 +3079,44 @@ def autonomous_investigate(
                 trigger_type = "domain"
             else:
                 trigger_type = "description"
-        
+
         results["trigger_type"] = trigger_type
+
+        # Named threat actor shortcut: if the trigger looks like a threat
+        # actor name (APT##, known alias, or a short multi-word description
+        # containing words like "actor" / "group"), delegate to
+        # search_threat_actors which actually knows how to hunt actor IOCs.
+        # autonomous_investigate cannot enrich or UDM-search on a name.
+        _KNOWN_ACTOR_ALIASES = {
+            "apt", "fancy bear", "cozy bear", "lazarus", "kimsuky", "turla",
+            "equation", "scattered spider", "midnight blizzard", "forest blizzard",
+            "storm-", "volt typhoon", "salt typhoon", "mustang panda", "charming kitten",
+            "fin7", "fin8", "ta505", "cobalt strike", "winnti", "carbanak",
+        }
+        trig_l = trigger.lower().strip()
+        looks_like_actor = (
+            trigger_type == "description" and
+            (re.match(r"^apt[- ]?\d+\b", trig_l) is not None or
+             any(alias in trig_l for alias in _KNOWN_ACTOR_ALIASES) or
+             (len(trig_l.split()) <= 3 and "threat actor" in trig_l))
+        )
+        if looks_like_actor:
+            actor_hunt = search_threat_actors(query=trigger, limit=50, days_back=90)
+            parsed = {}
+            try:
+                parsed = json.loads(actor_hunt)
+            except Exception:
+                parsed = {"raw": actor_hunt[:2000]}
+            results["trigger_type"] = "threat_actor"
+            results["steps"].append({"step": "1_IDENTIFY", "status": "delegated",
+                                      "note": f"Trigger '{trigger}' looks like a threat actor name; delegated to search_threat_actors."})
+            results["steps"].append({"step": "2_ACTOR_HUNT", "status": "complete",
+                                      "result": parsed})
+            results["severity"] = parsed.get("severity", "HIGH") if isinstance(parsed, dict) else "HIGH"
+            results["summary"] = (f"Threat actor hunt for '{trigger}': " +
+                                  f"{parsed.get('total_iocs', 0) if isinstance(parsed, dict) else '?'} IOCs returned; " +
+                                  "call enrich_indicator on any high-priority IOC or create_rule to close coverage gaps.")
+            return json.dumps(results, indent=2, default=str)
         
         # Enrich the indicator
         enrichment = {}
@@ -4474,8 +4510,13 @@ async def api_chat(request: StarletteRequest):
                 "Security Command Center, Google Threat Intelligence, Cloud Logging, SOAR, and "
                 "cross-platform containment (O365, Okta, Azure AD, AWS, GCP, CrowdStrike).\n\n"
                 "ENTRY-POINT ROUTING (pick the right starting tool):\n"
-                "- Alert / finding / IOC / 'investigate X' / 'hunt X' → call autonomous_investigate first. "
-                "It runs the full identify → enrich → search → assess → detect → contain → report pipeline.\n"
+                "- Named threat actor hunt ('hunt APT28', 'search for Lazarus', 'Fancy Bear IOCs') "
+                "→ call search_threat_actors(query=\"<actor name>\") FIRST. It returns IOCs "
+                "Mandiant attributes to that actor plus any matches in your SecOps UDM. Do NOT "
+                "use autonomous_investigate for named actors; it expects an IP / domain / hash / alert.\n"
+                "- Specific IOC (IP address, domain, file hash, URL) / alert / SCC finding → call "
+                "autonomous_investigate. It runs identify → enrich → UDM search → assess → detect → "
+                "contain → report.\n"
                 "- Phishing email reported / inbox rule abuse → call playbook_phish_response.\n"
                 "- Service account keys leaked / SA impersonation → call playbook_compromised_service_account.\n"
                 "- Ransomware / mass file encryption on a host → call playbook_ransomware_host.\n"
