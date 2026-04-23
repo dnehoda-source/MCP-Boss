@@ -4388,23 +4388,37 @@ from starlette.responses import JSONResponse
 
 
 async def health_check(request: StarletteRequest):
-    health = {
+    """Minimal unauthenticated health for liveness probes. Extended
+    details (tenant id, integrations) only for callers who present a
+    valid Bearer token, so anonymous scanners can't fingerprint."""
+    base = {
         "status": "healthy",
         "server": "google-native-mcp",
         "version": os.getenv("VERSION", "4.0.0-dev"),
-        "tools": len(list(app_mcp._tool_manager.list_tools())),
-        "project": SECOPS_PROJECT_ID,
-        "region": SECOPS_REGION,
-        "integrations": {
-            "gti": bool(GTI_API_KEY),
-            "o365": bool(O365_CLIENT_ID),
-            "okta": bool(OKTA_DOMAIN),
-            "azure_ad": bool(AZURE_AD_CLIENT_ID),
-            "aws": bool(AWS_ACCESS_KEY_ID),
-            "crowdstrike": bool(CS_CLIENT_ID),
-        },
     }
-    return JSONResponse(health)
+    auth = request.headers.get("authorization", "")
+    client_id = os.environ.get("OAUTH_CLIENT_ID", "")
+    if client_id and auth.startswith("Bearer "):
+        try:
+            from auth_middleware import verify_google_id_token
+            info = verify_google_id_token(auth[7:], client_id)
+            if info and info.get("email"):
+                base.update({
+                    "tools": len(list(app_mcp._tool_manager.list_tools())),
+                    "project": SECOPS_PROJECT_ID,
+                    "region": SECOPS_REGION,
+                    "integrations": {
+                        "gti": bool(GTI_API_KEY),
+                        "o365": bool(O365_CLIENT_ID),
+                        "okta": bool(OKTA_DOMAIN),
+                        "azure_ad": bool(AZURE_AD_CLIENT_ID),
+                        "aws": bool(AWS_ACCESS_KEY_ID),
+                        "crowdstrike": bool(CS_CLIENT_ID),
+                    },
+                })
+        except Exception:
+            pass
+    return JSONResponse(base)
 
 
 from mcp.server.sse import SseServerTransport
@@ -5239,12 +5253,50 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Prefer authenticated principal when AuthMiddleware has already
-        # run. But RateLimitMiddleware wraps OUTSIDE auth so scope.state
-        # is empty on ingress; use IP instead, fall back to X-Forwarded-For.
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
-        key = headers.get("x-forwarded-for", "").split(",")[0].strip() or (scope.get("client") or ("",))[0]
+
+        # Derive a per-principal key when possible: peek the Bearer token
+        # and extract the email claim (no signature verification here —
+        # AuthMiddleware still runs downstream and rejects invalid tokens).
+        # Fall back to IP so an unauth caller can still be limited.
+        principal_key = None
+        auth_header = headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            try:
+                import base64 as _b64
+                payload = auth_header[7:].split(".")[1]
+                payload += "=" * (-len(payload) % 4)
+                claims = json.loads(_b64.urlsafe_b64decode(payload))
+                email = claims.get("email")
+                if email:
+                    principal_key = f"email:{email}"
+            except Exception:
+                pass
+        if not principal_key:
+            ip = headers.get("x-forwarded-for", "").split(",")[0].strip() or (scope.get("client") or ("",))[0]
+            principal_key = f"ip:{ip}"
+        key = principal_key
+
+        # Light CSRF guard on POST: require Origin or Referer to match the
+        # Host header when present. Browsers always send these; an attacker
+        # cross-site POSTing the victim's token cannot set them.
+        method = scope.get("method", "GET").upper()
+        if method == "POST":
+            origin = headers.get("origin", "")
+            referer = headers.get("referer", "")
+            host = headers.get("host", "")
+            if origin or referer:
+                src = origin or referer
+                if host and host not in src:
+                    body = json.dumps({"error": "cross_origin_forbidden", "detail": "Origin/Referer does not match Host"}).encode("utf-8")
+                    await send({
+                        "type": "http.response.start",
+                        "status": 403,
+                        "headers": [(b"content-type", b"application/json")],
+                    })
+                    await send({"type": "http.response.body", "body": body})
+                    return
 
         import time as _time
         now = _time.time()
