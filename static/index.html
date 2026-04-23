@@ -1,205 +1,256 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MCP Boss — Security Operations</title>
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'SF Mono','Fira Code','Consolas',monospace; background:#0a0a0a; color:#e0e0e0; height:100vh; display:flex; flex-direction:column; }
-header { background:#111; border-bottom:1px solid #333; padding:14px 24px; display:flex; align-items:center; gap:16px; }
-header h1 { font-size:1.1em; color:#4caf50; }
-header .badge { background:#1a2a1a; color:#4caf50; border:1px solid #4caf50; border-radius:4px; padding:3px 10px; font-size:11px; }
-#chat { flex:1; overflow-y:auto; padding:20px 24px; display:flex; flex-direction:column; gap:16px; }
-.msg { max-width:85%; padding:12px 16px; border-radius:8px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-wrap:break-word; }
-.msg.user { align-self:flex-end; background:#1a3a1a; border:1px solid #2a5a2a; color:#c0e0c0; }
-.msg.bot { align-self:flex-start; background:#1a1a2a; border:1px solid #2a2a4a; color:#d0d0e8; }
-.msg.bot .tool-tag { display:inline-block; background:#2a1a3a; color:#b090d0; border:1px solid #4a2a6a; border-radius:3px; padding:1px 6px; font-size:11px; margin-right:6px; }
-.msg.bot .turn-info { color:#666; font-size:11px; margin-top:8px; }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google SecOps MCP Server</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
 
-/* Thinking indicator */
-.thinking { align-self:flex-start; display:flex; align-items:center; gap:10px; padding:12px 16px; color:#888; font-size:13px; }
-.thinking .dots { display:flex; gap:4px; }
-.thinking .dots span { width:6px; height:6px; background:#4caf50; border-radius:50%; animation:pulse 1.4s infinite; }
-.thinking .dots span:nth-child(2) { animation-delay:0.2s; }
-.thinking .dots span:nth-child(3) { animation-delay:0.4s; }
-@keyframes pulse { 0%,80%,100% { opacity:0.2; transform:scale(0.8); } 40% { opacity:1; transform:scale(1.2); } }
-.thinking .status { color:#4caf50; }
+        /* ── App ── */
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
 
-#input-bar { background:#111; border-top:1px solid #333; padding:14px 24px; display:flex; gap:10px; }
-#input-bar input { flex:1; background:#1a1a1a; border:1px solid #333; border-radius:6px; padding:10px 14px; color:#e0e0e0; font-family:inherit; font-size:13px; outline:none; }
-#input-bar input:focus { border-color:#4caf50; }
-#input-bar input:disabled { opacity:0.5; }
-#input-bar button { background:#4caf50; color:#000; border:none; border-radius:6px; padding:10px 20px; font-family:inherit; font-size:13px; font-weight:bold; cursor:pointer; }
-#input-bar button:hover { background:#5cbf60; }
-#input-bar button:disabled { background:#333; color:#666; cursor:not-allowed; }
+        /* ── Header ── */
+        header {
+            background: #111;
+            border-bottom: 1px solid #333;
+            padding: 12px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+        }
+        header h1 {
+            font-size: 16px;
+            color: #4ade80;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        header .status {
+            font-size: 12px;
+            color: #888;
+            flex: 1;
+            text-align: center;
+        }
+        header .status.connected { color: #4ade80; }
 
-.tools-used { margin-top:10px; display:flex; flex-wrap:wrap; gap:4px; }
-</style>
+        /* ── Chat ── */
+        #chat {
+            flex: 1;
+            overflow-y: auto;
+            padding: 24px;
+        }
+        .message {
+            margin-bottom: 16px;
+            max-width: 900px;
+        }
+        .message .role {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .message .role.user { color: #60a5fa; }
+        .message .role.assistant { color: #4ade80; }
+        .message .role.tool { color: #f59e0b; }
+        .message .role.error { color: #ef4444; }
+        .message .content {
+            background: #161616;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .message .content.tool-result {
+            background: #0d1117;
+            border-color: #f59e0b33;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* ── Input ── */
+        #input-area {
+            background: #111;
+            border-top: 1px solid #333;
+            padding: 16px 24px;
+            display: flex;
+            gap: 12px;
+        }
+        #input-area input {
+            flex: 1;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+        }
+        #input-area input:focus { border-color: #4ade80; }
+        #input-area input::placeholder { color: #555; }
+        #input-area button {
+            background: #4ade80;
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 24px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        #input-area button:hover { background: #22c55e; }
+        #input-area button:disabled { background: #333; color: #666; cursor: not-allowed; }
+    </style>
 </head>
 <body>
-<header>
-  <h1>🛡️ MCP Boss</h1>
-  <span class="badge" id="tool-count">loading...</span>
-  <span class="badge" id="status-badge">connecting...</span>
-</header>
-<div id="chat">
-  <div class="msg bot">Ready. Ask me anything — threat hunts, IOC enrichment, detection rules, case management, or full investigations. I have access to SecOps, SCC, GTI, Cloud Logging, SOAR, and containment tools.</div>
-</div>
-<div id="input-bar">
-  <input id="input" type="text" placeholder="e.g., Hunt for APT28 across all sources..." autocomplete="off" />
-  <button id="send" onclick="sendMessage()">Send</button>
-</div>
 
-<script>
-const chat = document.getElementById('chat');
-const input = document.getElementById('input');
-const sendBtn = document.getElementById('send');
-let sessionId = null;
-let thinkingEl = null;
-const thinkingMessages = [
-  'Analyzing request...',
-  'Calling security tools...',
-  'Querying SecOps SIEM...',
-  'Checking threat intelligence...',
-  'Correlating findings...',
-  'Processing tool results...',
-  'Building investigation...',
-  'Generating report...',
-];
-let thinkingInterval = null;
-let thinkingIdx = 0;
+    <!-- ════════════ App ════════════ -->
+    <div id="app">
+        <header>
+            <h1>🔒 Google SecOps MCP</h1>
+            <div class="status" id="status">Connecting...</div>
+        </header>
 
-// Health check
-fetch('/health').then(r=>r.json()).then(d=>{
-  document.getElementById('tool-count').textContent = d.tools + ' tools';
-  document.getElementById('status-badge').textContent = '✅ ' + d.version;
-  document.getElementById('status-badge').style.borderColor = '#4caf50';
-}).catch(()=>{
-  document.getElementById('status-badge').textContent = '❌ offline';
-  document.getElementById('status-badge').style.borderColor = '#f44';
-});
+        <div id="chat"></div>
 
-let cmdHistory = JSON.parse(localStorage.getItem('mcp_cmd_history') || '[]');
-let historyIdx = -1;
+        <div id="input-area">
+            <input type="text" id="input" placeholder="Ask anything... (e.g., 'check SCC findings' or 'enrich IP 8.8.8.8')" />
+            <button id="send" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
 
-input.addEventListener('keydown', e => { 
-  if (e.key === 'Enter' && !sendBtn.disabled) {
-    if (input.value.trim()) {
-      cmdHistory = cmdHistory.filter(c => c !== input.value.trim());
-      cmdHistory.unshift(input.value.trim());
-      if (cmdHistory.length > 50) cmdHistory.pop();
-      localStorage.setItem('mcp_cmd_history', JSON.stringify(cmdHistory));
-    }
-    historyIdx = -1;
-    sendMessage(); 
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault();
-    if (historyIdx < cmdHistory.length - 1) {
-      historyIdx++;
-      input.value = cmdHistory[historyIdx];
-    }
-  } else if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    if (historyIdx > 0) {
-      historyIdx--;
-      input.value = cmdHistory[historyIdx];
-    } else if (historyIdx === 0) {
-      historyIdx = -1;
-      input.value = '';
-    }
-  }
-});
+    <script>
+        // ── State ──
+        let tools = [];
 
-function addMessage(text, cls) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + cls;
-  div.innerHTML = text;
-  chat.appendChild(div);
-  chat.scrollTop = chat.scrollHeight;
-  return div;
-}
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('input');
+        const sendBtn = document.getElementById('send');
+        const statusEl = document.getElementById('status');
 
-function showThinking() {
-  thinkingIdx = 0;
-  thinkingEl = document.createElement('div');
-  thinkingEl.className = 'thinking';
-  thinkingEl.innerHTML = '<div class="dots"><span></span><span></span><span></span></div><span class="status">' + thinkingMessages[0] + '</span>';
-  chat.appendChild(thinkingEl);
-  chat.scrollTop = chat.scrollHeight;
-  thinkingInterval = setInterval(() => {
-    thinkingIdx = (thinkingIdx + 1) % thinkingMessages.length;
-    const statusEl = thinkingEl.querySelector('.status');
-    if (statusEl) statusEl.textContent = thinkingMessages[thinkingIdx];
-    chat.scrollTop = chat.scrollHeight;
-  }, 3000);
-}
+        // ── Chat Logic ──
+        async function initChat() {
+            try {
+                const resp = await fetch('/health');
+                const health = await resp.json();
+                statusEl.textContent = `✅ ${health.tools} tools · ${health.project}`;
+                statusEl.className = 'status connected';
 
-function hideThinking() {
-  if (thinkingInterval) { clearInterval(thinkingInterval); thinkingInterval = null; }
-  if (thinkingEl) { thinkingEl.remove(); thinkingEl = null; }
-}
-
-async function sendMessage() {
-  const msg = input.value.trim();
-  if (!msg) return;
-  input.value = '';
-  input.disabled = true;
-  sendBtn.disabled = true;
-
-  addMessage(msg, 'user');
-  showThinking();
-
-  try {
-    const body = { message: msg };
-    if (sessionId) body.session_id = sessionId;
-
-    const resp = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    hideThinking();
-
-    sessionId = data.session_id || sessionId;
-
-    if (data.error) {
-      addMessage('⚠️ Error: ' + data.error, 'bot');
-    } else {
-      let html = '';
-      // Show tools used
-      if (data.tools_called && data.tools_called.length > 0) {
-        html += '<div class="tools-used">';
-        const seen = new Set();
-        for (const t of data.tools_called) {
-          if (!seen.has(t.tool)) {
-            html += '<span class="tool-tag">🔧 ' + t.tool + '</span>';
-            seen.add(t.tool);
-          }
+                const toolResp = await fetch('/api/tools');
+                if (toolResp.ok) {
+                    tools = await toolResp.json();
+                    showWelcome();
+                }
+            } catch (e) {
+                statusEl.textContent = '❌ Connection failed';
+                addMessage('error', 'Failed to connect to MCP server: ' + e.message);
+            }
         }
-        html += '</div><br>';
-      } else if (data.tool_called) {
-        html += '<span class="tool-tag">🔧 ' + data.tool_called + '</span><br><br>';
-      }
-      // Main response
-      const response = data.response || data.summary || (data.tool_result ? JSON.stringify(data.tool_result, null, 2) : 'No response received.');
-      html += (response || '').replace(/\n/g, '<br>');
-      // Turn info
-      if (data.turns_used) {
-        html += '<div class="turn-info">' + (data.tools_called?.length || 1) + ' tool calls across ' + data.turns_used + ' turns</div>';
-      }
-      addMessage(html, 'bot');
-    }
-  } catch (e) {
-    hideThinking();
-    addMessage('⚠️ Network error: ' + e.message, 'bot');
-  }
 
-  input.disabled = false;
-  sendBtn.disabled = false;
-  input.focus();
-}
-</script>
+        function showWelcome() {
+            let msg = `Connected to Google SecOps MCP Server.\n\n`;
+            msg += `${tools.length} tools available. Try:\n`;
+            msg += `  • "check SCC findings for tito-436719"\n`;
+            msg += `  • "enrich IP 198.51.100.42"\n`;
+            msg += `  • "search SecOps for failed logins"\n`;
+            msg += `  • "list recent detections"\n`;
+            msg += `  • "tools" to see all available tools\n`;
+            addMessage('assistant', msg);
+        }
+
+        function addMessage(role, content) {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.innerHTML = `
+                <div class="role ${role}">${role}</div>
+                <div class="content ${role === 'tool' ? 'tool-result' : ''}">${escapeHtml(content)}</div>
+            `;
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const d = document.createElement('div');
+            d.textContent = text;
+            return d.innerHTML;
+        }
+
+        async function sendMessage() {
+            const text = input.value.trim();
+            if (!text) return;
+
+            addMessage('user', text);
+            input.value = '';
+            sendBtn.disabled = true;
+            sendBtn.textContent = '⏳';
+
+            if (text.toLowerCase() === 'tools') {
+                let toolList = 'Available tools:\n\n';
+                tools.forEach(t => {
+                    toolList += `  ${t.name}\n    ${t.description || ''}\n\n`;
+                });
+                addMessage('assistant', toolList);
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send';
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',  // send/receive cookies for session
+                    body: JSON.stringify({ message: text }),
+                });
+
+                const data = await resp.json();
+
+                // Store session_id for this browser session
+                if (data.session_id && !window._socSessionId) {
+                    window._socSessionId = data.session_id;
+                }
+
+                if (data.tool_called) {
+                    addMessage('tool', `⚡ ${data.tool_called}(${JSON.stringify(data.tool_args)})\n\n${JSON.stringify(data.tool_result, null, 2)}`);
+                }
+                if (data.response) {
+                    addMessage('assistant', data.response);
+                }
+                if (data.error) {
+                    addMessage('error', data.error);
+                }
+            } catch (e) {
+                addMessage('error', 'Request failed: ' + e.message);
+            }
+
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+        }
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !sendBtn.disabled) sendMessage();
+        });
+
+        // ── Boot ──
+        initChat();
+    </script>
 </body>
 </html>
